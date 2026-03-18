@@ -126,7 +126,7 @@ with st.sidebar:
 
     st.markdown("### ⚙️ Параметры")
     sample_size = st.slider("Размер выборки (ОО)", 50, 1000, 300, 10)
-    n_srs_runs = st.slider("Прогонов SRS (бейзлайн)", 10, 100, 50, 5)
+    n_srs_runs = st.slider("Прогонов SRS / Стратиф. (бейзлайн)", 10, 100, 50, 5)
     seed = st.number_input("Seed", 0, 9999, 42)
 
     st.markdown("### 🔬 Методы")
@@ -159,6 +159,13 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
         SUBJECT_NAMES
     )
 
+    all_metric_keys = [
+        'rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
+        'mmd', 'cramers_v', 'max_mark_dev', 'composite_score',
+        'mean_score_pop', 'mean_score_sample',
+        'mean_mark_pop', 'mean_mark_sample', 'ks_pvalue',
+    ]
+
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx_path = os.path.join(tmpdir, "ctx.xlsx")
         vpr_path = os.path.join(tmpdir, "vpr.csv")
@@ -171,57 +178,74 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
         X = prepare_feature_matrix(schools)
         n = min(sample_size, len(schools) // 5)
 
-        # SRS многократный
-        srs_scores, srs_all = [], []
-        for run in range(n_srs_runs):
-            idx = sample_srs(schools, n, seed=seed + run)
-            res = validate_sample(set(schools.iloc[idx]['login'].values), schools, vpr, X, idx)
-            res['composite_score'] = compute_composite_score(res)
-            srs_all.append(res)
-            srs_scores.append(res['composite_score'])
+        # ─── Вспомогательная: прогон стохастического метода N раз ────────
+        def _run_stochastic(sampler_fn, n_runs):
+            scores_list, all_runs = [], []
+            for run in range(n_runs):
+                idx = sampler_fn(seed + run)
+                res = validate_sample(
+                    set(schools.iloc[idx]['login'].values),
+                    schools, vpr, X, idx)
+                res['composite_score'] = compute_composite_score(res)
+                all_runs.append(res)
+                scores_list.append(res['composite_score'])
 
+            avg_raw = {}
+            for key in all_metric_keys:
+                vals = [r.get(key, 0) for r in all_runs]
+                avg_raw[key] = float(np.mean(vals))
+                avg_raw[f'{key}_std'] = float(np.std(vals))
+
+            avg_entry = {k: avg_raw[k] for k in all_metric_keys}
+            avg_entry['time_sec'] = 0.0
+            avg_entry['composite_score'] = avg_raw['composite_score']
+            avg_entry['slices'] = []
+            return avg_entry, scores_list, all_runs, avg_raw
+
+        # ─── SRS: N прогонов ────────────────────────────────────────────
+        srs_avg_entry, srs_scores, srs_all, srs_avg = _run_stochastic(
+            sampler_fn=lambda s: sample_srs(schools, n, seed=s),
+            n_runs=n_srs_runs,
+        )
         srs_mean = float(np.mean(srs_scores))
         srs_std = float(np.std(srs_scores))
 
-        # Средние SRS метрики
-        all_metric_keys = ['rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
-                           'mmd', 'cramers_v', 'max_mark_dev', 'composite_score',
-                           'mean_score_pop', 'mean_score_sample',
-                           'mean_mark_pop', 'mean_mark_sample', 'ks_pvalue']
-        srs_avg = {}
-        for key in all_metric_keys:
-            vals = [r.get(key, 0) for r in srs_all]
-            srs_avg[key] = float(np.mean(vals))
-            srs_avg[f'{key}_std'] = float(np.std(vals))
+        # ─── Стратифицированная: N прогонов ─────────────────────────────
+        strat_avg_entry, strat_scores, strat_all, strat_avg = _run_stochastic(
+            sampler_fn=lambda s: sample_stratified(schools, n, seed=s),
+            n_runs=n_srs_runs,
+        )
+        strat_mean = float(np.mean(strat_scores))
+        strat_std = float(np.std(strat_scores))
 
-        srs_avg_entry = {k: srs_avg[k] for k in all_metric_keys}
-        srs_avg_entry['time_sec'] = 0.0
-        srs_avg_entry['composite_score'] = srs_avg['composite_score']
-        srs_avg_entry['slices'] = []  # нет per-slice для среднего
-
-        # Детерминированные методы
+        # ─── Детерминированные ML-методы ────────────────────────────────
         det_methods = {
-            '2. Стратифицированная': lambda: sample_stratified(schools, n, seed),
             '3. k-center greedy':    lambda: sample_kmedoids(X, n, seed=seed),
             '4. Facility location':  lambda: sample_facility_location(X, n),
             '5. Kernel herding':     lambda: sample_kernel_herding(X, n),
         }
 
-        all_results = {f'1. SRS (среднее из {n_srs_runs})': srs_avg_entry}
+        all_results = {
+            f'1. SRS (среднее из {n_srs_runs})': srs_avg_entry,
+            f'2. Стратифицированная (среднее из {n_srs_runs})': strat_avg_entry,
+        }
         all_indices = {}
 
         for name, fn in det_methods.items():
             t0 = time.time()
             indices = fn()
             elapsed = time.time() - t0
-            res = validate_sample(set(schools.iloc[indices]['login'].values), schools, vpr, X, indices)
+            res = validate_sample(
+                set(schools.iloc[indices]['login'].values),
+                schools, vpr, X, indices)
             res['time_sec'] = elapsed
             res['composite_score'] = compute_composite_score(res)
             all_results[name] = res
             all_indices[name] = indices
 
-        # Лучший ML-метод
-        ml_only = {k: v for k, v in all_results.items() if 'SRS' not in k}
+        # ─── Лучший ML-метод (детерм.) ─────────────────────────────────
+        ml_only = {k: v for k, v in all_results.items()
+                   if 'SRS' not in k and 'Страт' not in k}
         best_ml_name = min(ml_only, key=lambda k: ml_only[k].get('composite_score', 99))
         best_idx = all_indices[best_ml_name]
 
@@ -244,6 +268,10 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
             'srs_mean': srs_mean,
             'srs_std': srs_std,
             'srs_scores': srs_scores,
+            'strat_avg': strat_avg,
+            'strat_mean': strat_mean,
+            'strat_std': strat_std,
+            'strat_scores': strat_scores,
             'n_actual': n,
             'N_total': len(schools),
         }
@@ -270,10 +298,10 @@ if not run_btn:
     st.markdown("""<div class="info-box">
 <strong>Как использовать:</strong><br>
 1. Загрузите контекстные данные ОО (.xlsx) и результаты ВПР (.csv).<br>
-2. Настройте параметры: размер выборки, прогоны SRS, seed.<br>
+2. Настройте параметры: размер выборки, прогоны SRS/Стратиф., seed.<br>
 3. Нажмите <strong>▶ Запустить эксперимент</strong>.<br>
 4. Анализируйте результаты по вкладкам, включая валидацию по срезам (класс × предмет).<br>
-<em>Отметка 0 (непройденные темы) исключена из анализа.</em>
+<em>SRS и Стратифицированная усредняются по N прогонов. Отметка 0 (непройденные темы) исключена из анализа.</em>
 </div>""", unsafe_allow_html=True)
 
 elif not ctx_file or not vpr_file:
@@ -287,23 +315,29 @@ else:
             st.error(f"❌ Ошибка: {e}")
             st.stop()
 
-    R           = data['all_results']
-    best_ml     = data['best_ml_name']
-    best_schools= data['best_schools']
-    best_vpr    = data['best_vpr']
-    vpr         = data['vpr']
-    schools     = data['schools']
-    srs_avg     = data['srs_avg']
-    srs_mean    = data['srs_mean']
-    srs_std     = data['srs_std']
-    srs_scores  = data['srs_scores']
-    n_actual    = data['n_actual']
-    N_total     = data['N_total']
+    R            = data['all_results']
+    best_ml      = data['best_ml_name']
+    best_schools = data['best_schools']
+    best_vpr     = data['best_vpr']
+    vpr          = data['vpr']
+    schools      = data['schools']
+    srs_avg      = data['srs_avg']
+    srs_mean     = data['srs_mean']
+    srs_std      = data['srs_std']
+    srs_scores   = data['srs_scores']
+    strat_avg    = data['strat_avg']
+    strat_mean   = data['strat_mean']
+    strat_std    = data['strat_std']
+    strat_scores = data['strat_scores']
+    n_actual     = data['n_actual']
+    N_total      = data['N_total']
 
     ml_res = R[best_ml]
     ml_score = ml_res['composite_score']
-    improvement = (srs_mean - ml_score) / srs_mean * 100
+    improvement_srs = (srs_mean - ml_score) / srs_mean * 100
+    improvement_strat = (strat_mean - ml_score) / strat_mean * 100
     srs_wins = sum(1 for s in srs_scores if s < ml_score)
+    strat_wins = sum(1 for s in strat_scores if s < ml_score)
 
     # ── Победитель ────────────────────────────────────────────────────────────
     st.markdown(f"""
@@ -311,8 +345,11 @@ else:
     <h3>🏆 Рекомендованный метод: {best_ml}</h3>
     <p>Составной балл: <strong>{ml_score:.4f}</strong> &nbsp;·&nbsp;
        SRS среднее: <strong>{srs_mean:.4f} ± {srs_std:.4f}</strong> &nbsp;·&nbsp;
-       Улучшение: <strong>{improvement:+.1f}%</strong> &nbsp;·&nbsp;
-       SRS побеждает в <strong>{srs_wins}/{n_srs_runs}</strong> ({srs_wins/n_srs_runs*100:.0f}%)
+       Стратиф. среднее: <strong>{strat_mean:.4f} ± {strat_std:.4f}</strong><br>
+       Улучшение vs SRS: <strong>{improvement_srs:+.1f}%</strong> &nbsp;·&nbsp;
+       Улучшение vs Стратиф.: <strong>{improvement_strat:+.1f}%</strong> &nbsp;·&nbsp;
+       SRS лучше в <strong>{srs_wins}/{n_srs_runs}</strong> &nbsp;·&nbsp;
+       Стратиф. лучше в <strong>{strat_wins}/{n_srs_runs}</strong>
     </p>
 </div>""", unsafe_allow_html=True)
 
@@ -381,7 +418,7 @@ else:
             use_container_width=True, height=300
         )
 
-        # ± SRS
+        # ± SRS и ± Стратиф.
         st.markdown("**Разброс SRS (±σ):**")
         bc = st.columns(7)
         for col, (lbl, k) in zip(bc, [
@@ -390,11 +427,19 @@ else:
             ('MaxΔ', 'max_mark_dev'), ('Балл', 'composite_score')]):
             col.metric(lbl, f"±{srs_avg.get(f'{k}_std', 0):.4f}")
 
+        st.markdown("**Разброс Стратифицированной (±σ):**")
+        bc2 = st.columns(7)
+        for col, (lbl, k) in zip(bc2, [
+            ('Ош.ȳ', 'rel_error_mean_score'), ('Ош.m̄', 'rel_error_mean_mark'),
+            ('KS', 'ks_stat'), ('MMD', 'mmd'), ('CramérV', 'cramers_v'),
+            ('MaxΔ', 'max_mark_dev'), ('Балл', 'composite_score')]):
+            col.metric(lbl, f"±{strat_avg.get(f'{k}_std', 0):.4f}")
+
         # Bar chart
         st.markdown('<div class="section-title" style="margin-top:1.5rem">Составные баллы</div>', unsafe_allow_html=True)
         ns = sorted(R, key=lambda k: R[k].get('composite_score', 99))
         fig_bar = go.Figure(go.Bar(
-            x=[n.split('.')[-1].strip()[:25] for n in ns],
+            x=[n.split('.')[-1].strip()[:30] for n in ns],
             y=[R[n]['composite_score'] for n in ns],
             marker_color=['#7ee787' if n == best_ml else '#8b949e' if 'SRS' in n
                           else '#2ea4ff' if 'Страт' in n else '#d2a8ff' if 'k-center' in n
@@ -415,7 +460,6 @@ else:
             pm = vpr['mark'].value_counts(normalize=True).sort_index()
             sm = best_vpr['mark'].value_counts(normalize=True).sort_index()
             marks = sorted(set(pm.index) | set(sm.index))
-            # Убираем 0 (на всякий случай)
             marks = [m for m in marks if m in [2, 3, 4, 5]]
 
             fig_m = go.Figure()
@@ -449,16 +493,18 @@ else:
                 margin=dict(l=40, r=10, t=40, b=40))
             st.plotly_chart(fig_e, use_container_width=True)
 
-        # Violin SRS
-        st.markdown('<div class="section-title">Стабильность SRS</div>', unsafe_allow_html=True)
+        # Violin: SRS + Стратиф.
+        st.markdown('<div class="section-title">Стабильность стохастических методов</div>', unsafe_allow_html=True)
         fig_v = go.Figure()
         fig_v.add_trace(go.Violin(y=srs_scores, box_visible=True, meanline_visible=True,
-            fillcolor='rgba(139,148,158,0.2)', line_color='#8b949e', name='SRS'))
+            fillcolor='rgba(139,148,158,0.2)', line_color='#8b949e', name='SRS', x0='SRS'))
+        fig_v.add_trace(go.Violin(y=strat_scores, box_visible=True, meanline_visible=True,
+            fillcolor='rgba(46,164,255,0.2)', line_color='#2ea4ff', name='Стратиф.', x0='Стратиф.'))
         fig_v.add_hline(y=ml_score, line_dash='dash', line_color='#7ee787',
             annotation_text=f'{best_ml.split(".")[-1].strip()}', annotation_position='top right')
         fig_v.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(13,17,23,1)', height=250, yaxis_title='Составной балл',
-            showlegend=False, margin=dict(l=40, r=10, t=20, b=40))
+            plot_bgcolor='rgba(13,17,23,1)', height=280, yaxis_title='Составной балл',
+            showlegend=True, margin=dict(l=40, r=10, t=20, b=40))
         st.plotly_chart(fig_v, use_container_width=True)
 
     # ── TAB 3: Валидация по срезам ────────────────────────────────────────────
@@ -470,7 +516,6 @@ else:
         if not slices:
             st.info("Нет данных по срезам.")
         else:
-            # Сводная таблица
             slice_rows = []
             for sl in slices:
                 row = {
@@ -495,7 +540,6 @@ else:
 
             st.dataframe(pd.DataFrame(slice_rows), use_container_width=True, height=280)
 
-            # Графики по срезам
             valid_slices = [sl for sl in slices if 'error' not in sl]
 
             if valid_slices:
@@ -534,7 +578,6 @@ else:
                             )
                             st.plotly_chart(fig_sl, use_container_width=True)
 
-                # ECDF по срезам
                 st.markdown('<div class="section-title" style="margin-top:1rem">ECDF баллов по срезам</div>',
                             unsafe_allow_html=True)
 
@@ -593,7 +636,6 @@ else:
             'n_students': '{:.0f}', 'mean_score': '{:.2f}', 'mean_mark': '{:.2f}'
         }), use_container_width=True, height=400)
 
-        # Гистограмма
         st.markdown('<div class="section-title">Средний балл ОО: выборка vs совокупность</div>', unsafe_allow_html=True)
         fig_h = go.Figure()
         fig_h.add_trace(go.Histogram(x=schools['mean_score'], nbinsx=50, name='Совокупность',
@@ -626,7 +668,6 @@ else:
             margin=dict(l=40, r=10, t=30, b=60), xaxis=dict(tickangle=-45))
         st.plotly_chart(fig_r, use_container_width=True)
 
-        # Тип расположения / размер НП
         cl2, cr2 = st.columns(2)
         with cl2:
             st.markdown('<div class="section-title">Тип расположения</div>', unsafe_allow_html=True)
@@ -690,9 +731,12 @@ else:
         st.json({
             'sample_size': n_actual, 'N_total': N_total,
             'fraction': round(n_actual / N_total, 4),
-            'seed': seed, 'n_srs_runs': n_srs_runs,
+            'seed': seed, 'n_runs': n_srs_runs,
             'best_method': best_ml, 'score': round(ml_score, 4),
-            'srs_mean': round(srs_mean, 4), 'improvement': f'{improvement:+.1f}%',
+            'srs_mean': round(srs_mean, 4), 'srs_std': round(srs_std, 4),
+            'strat_mean': round(strat_mean, 4), 'strat_std': round(strat_std, 4),
+            'improvement_vs_srs': f'{improvement_srs:+.1f}%',
+            'improvement_vs_strat': f'{improvement_strat:+.1f}%',
             'mark_0_excluded': True,
             'kim_constraints': {
                 'РУ 4кл': '≤38', 'РУ 5кл': '≤45', 'РУ 6кл': '≤45',

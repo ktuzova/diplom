@@ -167,10 +167,12 @@ def sample_kmedoids(X, n, seed=42):
 
 
 def sample_facility_location(X, n):
+    """Субмодулярная оптимизация facility location (жадный алгоритм)."""
     N = X.shape[0]
-    if N <= 5000:
+    if N <= 8000:
         return _fl_exact(X, n)
-    n_cand = min(5 * n, N)
+    # Пул кандидатов: max(10*n, 5000), но не больше N
+    n_cand = min(max(10 * n, 5000), N)
     cand_idx = np.random.RandomState(0).choice(N, size=n_cand, replace=False)
     print(f"    FL: {n_cand} кандидатов → отбор {n}...")
     return _fl_on_candidates(X, cand_idx, n)
@@ -193,28 +195,48 @@ def _fl_exact(X, n):
 
 
 def _fl_on_candidates(X_all, cand_idx, n):
+    """
+    Двухступенчатый FL: оценка покрытия по eval-подмножеству,
+    отбор из пула кандидатов.
+    """
+    N = len(X_all)
     n_cand = len(cand_idx)
     X_cand = X_all[cand_idx]
     rng = np.random.RandomState(1)
-    eval_size = min(5000, len(X_all))
-    X_eval = X_all[rng.choice(len(X_all), size=eval_size, replace=False)]
 
-    dists = cdist(X_eval, X_cand, metric='sqeuclidean')
-    sub_n = min(2000, n_cand)
-    sub_d = cdist(X_cand[:sub_n], X_cand[:sub_n], metric='sqeuclidean')
+    # ── eval-подмножество: до 10 000 точек из всей совокупности ──
+    eval_size = min(10000, N)
+    eval_idx = rng.choice(N, size=eval_size, replace=False)
+    X_eval = X_all[eval_idx]
+
+    # ── sigma по подвыборке кандидатов (до 3 000) ──
+    sub_n = min(3000, n_cand)
+    sub_idx = rng.choice(n_cand, size=sub_n, replace=False)
+    sub_d = cdist(X_cand[sub_idx], X_cand[sub_idx], metric='sqeuclidean')
     sigma2 = float(np.median(sub_d[sub_d > 0]))
-    sim = np.exp(-dists / (2 * sigma2))
 
-    sel, mask, cov = [], np.zeros(n_cand, dtype=bool), np.zeros(eval_size)
+    # ── матрица сходства eval × candidates (блоками, float32) ──
+    sim = np.empty((eval_size, n_cand), dtype=np.float32)
+    block = 2000
+    for s in range(0, eval_size, block):
+        e = min(s + block, eval_size)
+        d_block = cdist(X_eval[s:e], X_cand, metric='sqeuclidean')
+        sim[s:e] = np.exp(-d_block / (2 * sigma2)).astype(np.float32)
+
+    # ── жадный отбор ──
+    sel = []
+    mask = np.zeros(n_cand, dtype=bool)
+    cov = np.zeros(eval_size, dtype=np.float32)
     for step in range(n):
         gains = np.maximum(0, sim - cov[:, None]).sum(axis=0)
         gains[mask] = -1.0
-        best = gains.argmax()
+        best = int(gains.argmax())
         sel.append(best)
         mask[best] = True
         cov = np.maximum(cov, sim[:, best])
-        if (step + 1) % 100 == 0:
+        if (step + 1) % 200 == 0:
             print(f"    FL: {step + 1}/{n}")
+
     return cand_idx[np.array(sel)]
 
 
@@ -362,6 +384,45 @@ def compute_composite_score(results):
 
 
 # ============================================================
+# ВСПОМОГАТЕЛЬНАЯ: усреднение стохастических прогонов
+# ============================================================
+
+def _average_stochastic_runs(schools, vpr, X, n, n_runs, seed, sampler_fn):
+    """
+    Запускает стохастический метод n_runs раз с разными seed,
+    возвращает (avg_entry, scores_list, all_results_list).
+    """
+    all_metric_keys = [
+        'rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
+        'mmd', 'cramers_v', 'max_mark_dev', 'composite_score',
+        'mean_score_pop', 'mean_score_sample',
+        'mean_mark_pop', 'mean_mark_sample', 'ks_pvalue',
+    ]
+
+    scores, all_runs = [], []
+    for run in range(n_runs):
+        idx = sampler_fn(seed + run)
+        res = validate_sample(
+            set(schools.iloc[idx]['login'].values), schools, vpr, X, idx)
+        res['composite_score'] = compute_composite_score(res)
+        all_runs.append(res)
+        scores.append(res['composite_score'])
+
+    avg = {}
+    for key in all_metric_keys:
+        vals = [r.get(key, 0) for r in all_runs]
+        avg[key] = float(np.mean(vals))
+        avg[f'{key}_std'] = float(np.std(vals))
+
+    avg_entry = {k: avg[k] for k in all_metric_keys}
+    avg_entry['time_sec'] = 0.0
+    avg_entry['composite_score'] = avg['composite_score']
+    avg_entry['slices'] = []  # нет per-slice для среднего
+
+    return avg_entry, scores, all_runs, avg
+
+
+# ============================================================
 # 5. ГЛАВНАЯ ФУНКЦИЯ
 # ============================================================
 
@@ -378,34 +439,32 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
     n = min(sample_size, len(schools) // 5)
     print(f"  Выборка: {n} из {len(schools)}")
 
-    srs_scores, srs_all = [], []
-    for run in range(n_srs_runs):
-        idx = sample_srs(schools, n, seed=seed + run)
-        res = validate_sample(set(schools.iloc[idx]['login'].values), schools, vpr, X, idx)
-        res['composite_score'] = compute_composite_score(res)
-        srs_all.append(res)
-        srs_scores.append(res['composite_score'])
+    # --- SRS: N прогонов ---
+    srs_entry, srs_scores, srs_all, srs_avg = _average_stochastic_runs(
+        schools, vpr, X, n, n_srs_runs, seed,
+        sampler_fn=lambda s: sample_srs(schools, n, seed=s),
+    )
 
-    srs_avg = {}
-    for key in ['rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
-                'mmd', 'cramers_v', 'max_mark_dev', 'composite_score']:
-        vals = [r.get(key, 0) for r in srs_all]
-        srs_avg[key] = float(np.mean(vals))
-        srs_avg[f'{key}_std'] = float(np.std(vals))
+    # --- Стратифицированная: N прогонов ---
+    strat_entry, strat_scores, strat_all, strat_avg = _average_stochastic_runs(
+        schools, vpr, X, n, n_srs_runs, seed,
+        sampler_fn=lambda s: sample_stratified(schools, n, seed=s),
+    )
 
-    methods = {
-        '2. Стратифицированная': lambda: sample_stratified(schools, n, seed),
-        '3. k-center greedy': lambda: sample_kmedoids(X, n, seed=seed),
-        '4. Facility location': lambda: sample_facility_location(X, n),
-        '5. Kernel herding': lambda: sample_kernel_herding(X, n),
+    # --- Детерминированные методы ---
+    det_methods = {
+        '3. k-center greedy':    lambda: sample_kmedoids(X, n, seed=seed),
+        '4. Facility location':  lambda: sample_facility_location(X, n),
+        '5. Kernel herding':     lambda: sample_kernel_herding(X, n),
     }
 
     all_results = {}
-    for name, fn in methods.items():
+    for name, fn in det_methods.items():
         t0 = time.time()
         indices = fn()
         elapsed = time.time() - t0
-        res = validate_sample(set(schools.iloc[indices]['login'].values), schools, vpr, X, indices)
+        res = validate_sample(set(schools.iloc[indices]['login'].values),
+                              schools, vpr, X, indices)
         res['time_sec'] = elapsed
         res['composite_score'] = compute_composite_score(res)
         all_results[name] = res
