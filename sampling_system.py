@@ -21,16 +21,10 @@ warnings.filterwarnings('ignore')
 # ============================================================
 # КОНСТАНТЫ
 # ============================================================
-# subject_code: 1 = Русский язык (РУ), 2 = Математика (МА)
 KIM_MAX_SCORES = {
-    (4, 1): 38,   # РУ 4 класс
-    (5, 1): 45,   # РУ 5 класс
-    (6, 1): 45,   # РУ 6 класс
-    (4, 2): 20,   # МА 4 класс
-    (5, 2): 20,   # МА 5 класс
-    (6, 2): 20,   # МА 6 класс
+    (4, 1): 38, (5, 1): 45, (6, 1): 45,
+    (4, 2): 20, (5, 2): 20, (6, 2): 20,
 }
-
 SUBJECT_NAMES = {1: 'РУ', 2: 'МА'}
 VALID_MARKS = [2, 3, 4, 5]
 
@@ -42,7 +36,6 @@ def load_context_data(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
     if df.iloc[0, 0] == df.columns[0] or df.iloc[0, 0] == 'Логин ОО':
         df = df.iloc[1:].reset_index(drop=True)
-
     df.columns = ['login', 'location_type', 'locality_name',
                   'locality_size', 'is_correctional', 'n_students']
     df['region'] = df['login'].str[3:5]
@@ -63,7 +56,6 @@ def load_vpr_data(path: str) -> pd.DataFrame:
     for c in ['score', 'mark', 'grade', 'subject_code']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
     df = df.dropna(subset=['score', 'mark']).reset_index(drop=True)
-
     n_before = len(df)
     df = df[df['mark'].isin(VALID_MARKS)].reset_index(drop=True)
     print(f"  ВПР: {n_before} → {len(df)} (удалено {n_before - len(df)} записей с mark=0)")
@@ -105,9 +97,59 @@ def prepare_feature_matrix(schools):
         'pct_mark_5': schools['pct_mark_5'].values,
     }))
     features = pd.concat(parts, axis=1)
-    X = StandardScaler().fit_transform(features.values.astype(float))
-    print(f"  Признаков: {X.shape[1]} (one-hot)")
+    X = StandardScaler().fit_transform(features.values.astype(np.float32))
+    print(f"  Признаков: {X.shape[1]} (one-hot, float32)")
     return X
+
+
+# ============================================================
+# 1b. ПРЕДВЫЧИСЛЕНИЯ ДЛЯ БЫСТРОЙ ВАЛИДАЦИИ
+# ============================================================
+
+def build_vpr_index(vpr):
+    """login → массив индексов строк ВПР. O(1) вместо isin() на 11М строк."""
+    idx = {}
+    for login, group in vpr.groupby('login'):
+        idx[login] = group.index.values
+    return idx
+
+
+def precompute_pop_stats(vpr, X_all):
+    """Статистики генеральной совокупности — вычисляются один раз."""
+    rng = np.random.RandomState(0)
+
+    # Отметки
+    pop_mark_counts = vpr['mark'].value_counts().sort_index()
+    marks = sorted(pop_mark_counts.index)
+    pop_mark_probs = np.array([pop_mark_counts.get(m, 0) for m in marks], dtype=np.float64)
+    pop_mark_probs = pop_mark_probs / pop_mark_probs.sum()
+
+    # Средние
+    pop_mean_score = float(vpr['score'].mean())
+    pop_mean_mark = float(vpr['mark'].mean())
+
+    # MMD: подвыборка популяции, sigma², Kpp — фиксированы
+    Xp = X_all[rng.choice(len(X_all), min(3000, len(X_all)), replace=False)]
+    d_sub = cdist(Xp[:400], Xp[:400], 'sqeuclidean')
+    sigma2 = float(np.median(d_sub[d_sub > 0]))
+    kpp = float(np.exp(-cdist(Xp, Xp, 'sqeuclidean') / (2 * sigma2)).mean())
+
+    # Предгруппированные слайсы
+    slice_groups = {}
+    for (g, s), grp in vpr.groupby(['grade', 'subject_code']):
+        slice_groups[(g, s)] = grp
+
+    return {
+        'marks': marks,
+        'pop_mark_probs': pop_mark_probs,
+        'pop_mean_score': pop_mean_score,
+        'pop_mean_mark': pop_mean_mark,
+        'n_pop': len(vpr),
+        'Xp_sub': Xp,
+        'sigma2': sigma2,
+        'kpp': kpp,
+        'slice_groups': slice_groups,
+    }
 
 
 # ============================================================
@@ -171,7 +213,6 @@ def sample_facility_location(X, n):
     N = X.shape[0]
     if N <= 8000:
         return _fl_exact(X, n)
-    # Пул кандидатов: max(10*n, 5000), но не больше N
     n_cand = min(max(10 * n, 5000), N)
     cand_idx = np.random.RandomState(0).choice(N, size=n_cand, replace=False)
     print(f"    FL: {n_cand} кандидатов → отбор {n}...")
@@ -182,8 +223,8 @@ def _fl_exact(X, n):
     N = X.shape[0]
     dists = cdist(X, X, metric='sqeuclidean')
     sigma2 = float(np.median(dists[dists > 0]))
-    sim = np.exp(-dists / (2 * sigma2))
-    selected, mask, cov = [], np.zeros(N, dtype=bool), np.zeros(N)
+    sim = np.exp(-dists / (2 * sigma2)).astype(np.float32)
+    selected, mask, cov = [], np.zeros(N, dtype=bool), np.zeros(N, dtype=np.float32)
     for _ in range(n):
         gains = np.maximum(0, sim - cov[:, None]).sum(axis=0)
         gains[mask] = -1.0
@@ -195,38 +236,27 @@ def _fl_exact(X, n):
 
 
 def _fl_on_candidates(X_all, cand_idx, n):
-    """
-    Двухступенчатый FL: оценка покрытия по eval-подмножеству,
-    отбор из пула кандидатов.
-    """
     N = len(X_all)
     n_cand = len(cand_idx)
     X_cand = X_all[cand_idx]
     rng = np.random.RandomState(1)
 
-    # ── eval-подмножество: до 10 000 точек из всей совокупности ──
     eval_size = min(10000, N)
-    eval_idx = rng.choice(N, size=eval_size, replace=False)
-    X_eval = X_all[eval_idx]
+    X_eval = X_all[rng.choice(N, size=eval_size, replace=False)]
 
-    # ── sigma по подвыборке кандидатов (до 3 000) ──
     sub_n = min(3000, n_cand)
     sub_idx = rng.choice(n_cand, size=sub_n, replace=False)
     sub_d = cdist(X_cand[sub_idx], X_cand[sub_idx], metric='sqeuclidean')
     sigma2 = float(np.median(sub_d[sub_d > 0]))
 
-    # ── матрица сходства eval × candidates (блоками, float32) ──
     sim = np.empty((eval_size, n_cand), dtype=np.float32)
     block = 2000
     for s in range(0, eval_size, block):
         e = min(s + block, eval_size)
-        d_block = cdist(X_eval[s:e], X_cand, metric='sqeuclidean')
-        sim[s:e] = np.exp(-d_block / (2 * sigma2)).astype(np.float32)
+        sim[s:e] = np.exp(-cdist(X_eval[s:e], X_cand, metric='sqeuclidean')
+                          / (2 * sigma2)).astype(np.float32)
 
-    # ── жадный отбор ──
-    sel = []
-    mask = np.zeros(n_cand, dtype=bool)
-    cov = np.zeros(eval_size, dtype=np.float32)
+    sel, mask, cov = [], np.zeros(n_cand, dtype=bool), np.zeros(eval_size, dtype=np.float32)
     for step in range(n):
         gains = np.maximum(0, sim - cov[:, None]).sum(axis=0)
         gains[mask] = -1.0
@@ -236,7 +266,6 @@ def _fl_on_candidates(X_all, cand_idx, n):
         cov = np.maximum(cov, sim[:, best])
         if (step + 1) % 200 == 0:
             print(f"    FL: {step + 1}/{n}")
-
     return cand_idx[np.array(sel)]
 
 
@@ -249,20 +278,24 @@ def sample_kernel_herding(X, n):
 
     eval_size = min(5000, N)
     X_eval = X[rng.choice(N, size=eval_size, replace=False)]
-    mu = np.zeros(N)
+    mu = np.zeros(N, dtype=np.float64)
     for s in range(0, eval_size, 2000):
         e = min(s + 2000, eval_size)
-        mu += np.exp(-cdist(X_eval[s:e], X, metric='sqeuclidean') / (2 * sigma2)).sum(axis=0)
+        mu += np.exp(-cdist(X_eval[s:e], X, metric='sqeuclidean')
+                     / (2 * sigma2)).sum(axis=0)
     mu /= eval_size
 
-    selected, mask, w = [], np.zeros(N, dtype=bool), mu.copy()
+    selected, mask = [], np.zeros(N, dtype=bool)
+    w = mu.copy()
+    inv_2s = 1.0 / (2 * sigma2)
     for step in range(n):
         wm = w.copy()
         wm[mask] = -np.inf
-        best = np.argmax(wm)
+        best = int(np.argmax(wm))
         selected.append(best)
         mask[best] = True
-        w = w + mu - np.exp(-np.sum((X - X[best]) ** 2, axis=1) / (2 * sigma2))
+        d_best = cdist(X, X[best:best+1], metric='sqeuclidean').ravel()
+        w = w + mu - np.exp(-d_best * inv_2s)
         if (step + 1) % 100 == 0:
             print(f"    KH: {step + 1}/{n}")
     return np.array(selected)
@@ -272,7 +305,31 @@ def sample_kernel_herding(X, n):
 # 3. МЕТРИКИ ВАЛИДАЦИИ
 # ============================================================
 
+def _compute_chi2_from_counts(sample_marks_series, marks, pop_probs):
+    """Chi2 / Cramér V по предвычисленным долям популяции."""
+    sc = sample_marks_series.value_counts().sort_index()
+    obs = np.array([sc.get(m, 0) for m in marks])
+    exp_arr = pop_probs * obs.sum()
+    mask = exp_arr > 0
+    stat, pval = chisquare(obs[mask], exp_arr[mask])
+    n_obs, k = obs[mask].sum(), mask.sum()
+    cv = (stat / (n_obs * max(k - 1, 1))) ** 0.5 if n_obs > 0 else 0.0
+    sp = obs / max(obs.sum(), 1)
+    return {'chi2_stat': stat, 'chi2_pvalue': pval, 'cramers_v': cv,
+            'max_mark_dev': float(np.max(np.abs(sp - pop_probs)))}
+
+
+def compute_chi2_marks(sample_marks, pop_marks):
+    """Обратная совместимость: считает pop_probs на лету."""
+    pc = pop_marks.value_counts().sort_index()
+    marks = sorted(pc.index)
+    ep = np.array([pc.get(m, 0) for m in marks], dtype=np.float64)
+    ep = ep / ep.sum()
+    return _compute_chi2_from_counts(sample_marks, marks, ep)
+
+
 def compute_mmd(X_sample, X_pop, sigma=None):
+    """Полный MMD (для детерминированных методов)."""
     rng = np.random.RandomState(0)
     Xp = X_pop[rng.choice(len(X_pop), min(3000, len(X_pop)), replace=False)]
     Xs = X_sample[rng.choice(len(X_sample), min(3000, len(X_sample)), replace=False)]
@@ -288,21 +345,18 @@ def compute_mmd(X_sample, X_pop, sigma=None):
     return max(0, kss + kpp - 2 * ksp) ** 0.5
 
 
-def compute_chi2_marks(sample_marks, pop_marks):
-    pc = pop_marks.value_counts().sort_index()
-    sc = sample_marks.value_counts().sort_index()
-    marks = sorted(set(pc.index) | set(sc.index))
-    obs = np.array([sc.get(m, 0) for m in marks])
-    ep = np.array([pc.get(m, 0) for m in marks])
-    ep = ep / ep.sum()
-    exp = ep * obs.sum()
-    mask = exp > 0
-    stat, pval = chisquare(obs[mask], exp[mask])
-    n_obs, k = obs[mask].sum(), mask.sum()
-    cv = (stat / (n_obs * max(k - 1, 1))) ** 0.5 if n_obs > 0 else 0.0
-    sp = obs / max(obs.sum(), 1)
-    return {'chi2_stat': stat, 'chi2_pvalue': pval, 'cramers_v': cv,
-            'max_mark_dev': float(np.max(np.abs(sp - ep)))}
+def _compute_mmd_fast(X_sample, pop_stats):
+    """MMD с предвычисленными Kpp и σ² — один cdist вместо трёх."""
+    rng = np.random.RandomState(0)
+    Xs = X_sample
+    if len(Xs) > 3000:
+        Xs = Xs[rng.choice(len(Xs), 3000, replace=False)]
+    sigma2 = pop_stats['sigma2']
+    kpp = pop_stats['kpp']
+    Xp = pop_stats['Xp_sub']
+    kss = float(np.exp(-cdist(Xs, Xs, 'sqeuclidean') / (2 * sigma2)).mean())
+    ksp = float(np.exp(-cdist(Xs, Xp, 'sqeuclidean') / (2 * sigma2)).mean())
+    return max(0, kss + kpp - 2 * ksp) ** 0.5
 
 
 def validate_slice(samp_sl, pop_sl, grade, subj):
@@ -315,7 +369,6 @@ def validate_slice(samp_sl, pop_sl, grade, subj):
     if len(samp_sl) < 10 or len(pop_sl) < 10:
         res['error'] = 'Мало данных'
         return res
-
     km = res['kim_max']
     if km:
         pop_sl = pop_sl[pop_sl['score'] <= km]
@@ -323,7 +376,6 @@ def validate_slice(samp_sl, pop_sl, grade, subj):
     if len(samp_sl) < 5:
         res['error'] = 'Мало данных после КИМ-фильтра'
         return res
-
     res.update(compute_chi2_marks(samp_sl['mark'], pop_sl['mark']))
     ks_s, ks_p = ks_2samp(samp_sl['score'], pop_sl['score'])
     res['ks_stat'] = ks_s
@@ -338,7 +390,67 @@ def validate_slice(samp_sl, pop_sl, grade, subj):
     return res
 
 
+# ============================================================
+# 3b. БЫСТРАЯ ВАЛИДАЦИЯ (для стохастических прогонов)
+# ============================================================
+
+def validate_sample_fast(sample_indices, schools, vpr, X_all,
+                         vpr_index, pop_stats, compute_slices=False):
+    """
+    Быстрая валидация: VPR-индекс, предвычисленные pop-статистики,
+    кэшированные Kpp/σ². Опционально пропускает per-slice.
+    """
+    logins = schools.iloc[sample_indices]['login'].values
+    idx_arrays = [vpr_index[l] for l in logins if l in vpr_index]
+    if not idx_arrays:
+        return {'error': 'Нет данных ВПР для выбранных ОО'}
+    sample_vpr = vpr.iloc[np.concatenate(idx_arrays)]
+
+    marks = pop_stats['marks']
+    pop_probs = pop_stats['pop_mark_probs']
+    pm = pop_stats['pop_mean_score']
+    pmk = pop_stats['pop_mean_mark']
+
+    r = {'n_schools_selected': len(logins),
+         'n_students_sample': len(sample_vpr),
+         'n_students_pop': pop_stats['n_pop']}
+
+    # Chi2 / Cramér V
+    r.update(_compute_chi2_from_counts(sample_vpr['mark'], marks, pop_probs))
+
+    # KS
+    ks_s, ks_p = ks_2samp(sample_vpr['score'].values, vpr['score'].values)
+    r['ks_stat'] = ks_s
+    r['ks_pvalue'] = ks_p
+
+    # Средние
+    sm = float(sample_vpr['score'].mean())
+    smk = float(sample_vpr['mark'].mean())
+    r['mean_score_pop'] = pm
+    r['mean_score_sample'] = sm
+    r['rel_error_mean_score'] = abs(sm - pm) / pm
+    r['mean_mark_pop'] = pmk
+    r['mean_mark_sample'] = smk
+    r['rel_error_mean_mark'] = abs(smk - pmk) / pmk
+
+    # MMD — быстрая версия
+    r['mmd'] = _compute_mmd_fast(X_all[sample_indices], pop_stats)
+
+    # Слайсы
+    if compute_slices:
+        slices = []
+        for (g, s), pop_sl in pop_stats['slice_groups'].items():
+            samp_sl = sample_vpr[
+                (sample_vpr['grade'] == g) & (sample_vpr['subject_code'] == s)]
+            slices.append(validate_slice(samp_sl, pop_sl, g, s))
+        r['slices'] = slices
+    else:
+        r['slices'] = []
+    return r
+
+
 def validate_sample(sample_logins, schools, vpr, X_all, sample_indices):
+    """Полная валидация (обратная совместимость, для детерм. методов)."""
     logins = set(schools.iloc[sample_indices]['login'].values)
     sample_vpr = vpr[vpr['login'].isin(logins)]
     if len(sample_vpr) == 0:
@@ -364,7 +476,8 @@ def validate_sample(sample_logins, schools, vpr, X_all, sample_indices):
 
     slices = []
     for (g, s), pop_sl in vpr.groupby(['grade', 'subject_code']):
-        samp_sl = sample_vpr[(sample_vpr['grade'] == g) & (sample_vpr['subject_code'] == s)]
+        samp_sl = sample_vpr[
+            (sample_vpr['grade'] == g) & (sample_vpr['subject_code'] == s)]
         slices.append(validate_slice(samp_sl, pop_sl, g, s))
     r['slices'] = slices
     return r
@@ -384,41 +497,40 @@ def compute_composite_score(results):
 
 
 # ============================================================
-# ВСПОМОГАТЕЛЬНАЯ: усреднение стохастических прогонов
+# 4. БЫСТРОЕ УСРЕДНЕНИЕ СТОХАСТИЧЕСКИХ ПРОГОНОВ
 # ============================================================
 
-def _average_stochastic_runs(schools, vpr, X, n, n_runs, seed, sampler_fn):
-    """
-    Запускает стохастический метод n_runs раз с разными seed,
-    возвращает (avg_entry, scores_list, all_results_list).
-    """
-    all_metric_keys = [
-        'rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
-        'mmd', 'cramers_v', 'max_mark_dev', 'composite_score',
-        'mean_score_pop', 'mean_score_sample',
-        'mean_mark_pop', 'mean_mark_sample', 'ks_pvalue',
-    ]
+ALL_METRIC_KEYS = [
+    'rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
+    'mmd', 'cramers_v', 'max_mark_dev', 'composite_score',
+    'mean_score_pop', 'mean_score_sample',
+    'mean_mark_pop', 'mean_mark_sample', 'ks_pvalue',
+]
 
+
+def _average_stochastic_runs(schools, vpr, X, n, n_runs, seed,
+                             sampler_fn, vpr_index, pop_stats):
+    """N прогонов стохастического метода с быстрой валидацией."""
     scores, all_runs = [], []
     for run in range(n_runs):
         idx = sampler_fn(seed + run)
-        res = validate_sample(
-            set(schools.iloc[idx]['login'].values), schools, vpr, X, idx)
+        res = validate_sample_fast(
+            idx, schools, vpr, X, vpr_index, pop_stats,
+            compute_slices=False)
         res['composite_score'] = compute_composite_score(res)
         all_runs.append(res)
         scores.append(res['composite_score'])
 
     avg = {}
-    for key in all_metric_keys:
+    for key in ALL_METRIC_KEYS:
         vals = [r.get(key, 0) for r in all_runs]
         avg[key] = float(np.mean(vals))
         avg[f'{key}_std'] = float(np.std(vals))
 
-    avg_entry = {k: avg[k] for k in all_metric_keys}
+    avg_entry = {k: avg[k] for k in ALL_METRIC_KEYS}
     avg_entry['time_sec'] = 0.0
     avg_entry['composite_score'] = avg['composite_score']
-    avg_entry['slices'] = []  # нет per-slice для среднего
-
+    avg_entry['slices'] = []
     return avg_entry, scores, all_runs, avg
 
 
@@ -439,19 +551,27 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
     n = min(sample_size, len(schools) // 5)
     print(f"  Выборка: {n} из {len(schools)}")
 
-    # --- SRS: N прогонов ---
+    # Предвычисления
+    t0 = time.time()
+    vpr_index = build_vpr_index(vpr)
+    pop_stats = precompute_pop_stats(vpr, X)
+    print(f"  Предвычисления: {time.time() - t0:.1f}с")
+
+    # --- SRS ---
     srs_entry, srs_scores, srs_all, srs_avg = _average_stochastic_runs(
         schools, vpr, X, n, n_srs_runs, seed,
         sampler_fn=lambda s: sample_srs(schools, n, seed=s),
+        vpr_index=vpr_index, pop_stats=pop_stats,
     )
 
-    # --- Стратифицированная: N прогонов ---
+    # --- Стратифицированная ---
     strat_entry, strat_scores, strat_all, strat_avg = _average_stochastic_runs(
         schools, vpr, X, n, n_srs_runs, seed,
         sampler_fn=lambda s: sample_stratified(schools, n, seed=s),
+        vpr_index=vpr_index, pop_stats=pop_stats,
     )
 
-    # --- Детерминированные методы ---
+    # --- Детерминированные ---
     det_methods = {
         '3. k-center greedy':    lambda: sample_kmedoids(X, n, seed=seed),
         '4. Facility location':  lambda: sample_facility_location(X, n),

@@ -125,8 +125,8 @@ with st.sidebar:
     vpr_file = st.file_uploader("Результаты ВПР (.csv)", type=["csv"])
 
     st.markdown("### ⚙️ Параметры")
-    sample_size = st.slider("Размер выборки (ОО)", 50, 1000, 300, 10)
-    n_srs_runs = st.slider("Прогонов SRS / Стратиф. (бейзлайн)", 10, 100, 50, 5)
+    sample_size = st.number_input("Размер выборки (ОО)", min_value=50, value=300, step=10)
+    n_srs_runs = st.number_input("Прогонов SRS / Стратиф.", min_value=5, value=50, step=5)
     seed = st.number_input("Seed", 0, 9999, 42)
 
     st.markdown("### 🔬 Методы")
@@ -155,16 +155,10 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
         load_context_data, load_vpr_data, build_school_features,
         prepare_feature_matrix, sample_srs, sample_stratified,
         sample_kmedoids, sample_facility_location, sample_kernel_herding,
-        validate_sample, compute_composite_score, VALID_MARKS, KIM_MAX_SCORES,
-        SUBJECT_NAMES
+        validate_sample, validate_sample_fast, compute_composite_score,
+        build_vpr_index, precompute_pop_stats,
+        VALID_MARKS, KIM_MAX_SCORES, SUBJECT_NAMES, ALL_METRIC_KEYS,
     )
-
-    all_metric_keys = [
-        'rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
-        'mmd', 'cramers_v', 'max_mark_dev', 'composite_score',
-        'mean_score_pop', 'mean_score_sample',
-        'mean_mark_pop', 'mean_mark_sample', 'ks_pvalue',
-    ]
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx_path = os.path.join(tmpdir, "ctx.xlsx")
@@ -178,25 +172,29 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
         X = prepare_feature_matrix(schools)
         n = min(sample_size, len(schools) // 5)
 
+        # ─── Предвычисления (один раз) ──────────────────────────────────
+        vpr_index = build_vpr_index(vpr)
+        pop_stats = precompute_pop_stats(vpr, X)
+
         # ─── Вспомогательная: прогон стохастического метода N раз ────────
         def _run_stochastic(sampler_fn, n_runs):
             scores_list, all_runs = [], []
             for run in range(n_runs):
                 idx = sampler_fn(seed + run)
-                res = validate_sample(
-                    set(schools.iloc[idx]['login'].values),
-                    schools, vpr, X, idx)
+                res = validate_sample_fast(
+                    idx, schools, vpr, X, vpr_index, pop_stats,
+                    compute_slices=False)
                 res['composite_score'] = compute_composite_score(res)
                 all_runs.append(res)
                 scores_list.append(res['composite_score'])
 
             avg_raw = {}
-            for key in all_metric_keys:
+            for key in ALL_METRIC_KEYS:
                 vals = [r.get(key, 0) for r in all_runs]
                 avg_raw[key] = float(np.mean(vals))
                 avg_raw[f'{key}_std'] = float(np.std(vals))
 
-            avg_entry = {k: avg_raw[k] for k in all_metric_keys}
+            avg_entry = {k: avg_raw[k] for k in ALL_METRIC_KEYS}
             avg_entry['time_sec'] = 0.0
             avg_entry['composite_score'] = avg_raw['composite_score']
             avg_entry['slices'] = []
