@@ -118,23 +118,19 @@ def precompute_pop_stats(vpr, X_all):
     """Статистики генеральной совокупности — вычисляются один раз."""
     rng = np.random.RandomState(0)
 
-    # Отметки
     pop_mark_counts = vpr['mark'].value_counts().sort_index()
     marks = sorted(pop_mark_counts.index)
     pop_mark_probs = np.array([pop_mark_counts.get(m, 0) for m in marks], dtype=np.float64)
     pop_mark_probs = pop_mark_probs / pop_mark_probs.sum()
 
-    # Средние
     pop_mean_score = float(vpr['score'].mean())
     pop_mean_mark = float(vpr['mark'].mean())
 
-    # MMD: подвыборка популяции, sigma², Kpp — фиксированы
     Xp = X_all[rng.choice(len(X_all), min(3000, len(X_all)), replace=False)]
     d_sub = cdist(Xp[:400], Xp[:400], 'sqeuclidean')
     sigma2 = float(np.median(d_sub[d_sub > 0]))
     kpp = float(np.exp(-cdist(Xp, Xp, 'sqeuclidean') / (2 * sigma2)).mean())
 
-    # Предгруппированные слайсы
     slice_groups = {}
     for (g, s), grp in vpr.groupby(['grade', 'subject_code']):
         slice_groups[(g, s)] = grp
@@ -152,6 +148,15 @@ def precompute_pop_stats(vpr, X_all):
     }
 
 
+def precompute_strata(schools):
+    """Предвычисление страта→индексы (один раз, не на каждый прогон)."""
+    strata = schools['region'] + '_' + schools['location_code'].astype(str)
+    strata_map = {}
+    for s_name, group in strata.groupby(strata):
+        strata_map[s_name] = group.index.values
+    return strata_map
+
+
 # ============================================================
 # 2. МЕТОДЫ СЭМПЛИНГА
 # ============================================================
@@ -160,49 +165,54 @@ def sample_srs(schools, n, seed=42):
     return np.random.RandomState(seed).choice(len(schools), size=n, replace=False)
 
 
-def sample_stratified(schools, n, seed=42):
+def sample_stratified(schools, n, seed=42, strata_map=None):
+    """
+    Стратифицированная выборка: пропорциональное размещение
+    по методу Хэра (наибольших остатков).
+    strata_map — предвычисленный словарь {имя_страты: np.array индексов}.
+    """
     rng = np.random.RandomState(seed)
-    schools = schools.copy()
-    schools['stratum'] = schools['region'] + '_' + schools['location_code'].astype(str)
-    strata_counts = schools['stratum'].value_counts()
     N_total = len(schools)
 
-    exact = {s: n * cnt / N_total for s, cnt in strata_counts.items()}
-    floor = {s: int(v) for s, v in exact.items()}
-    rems = {s: exact[s] - floor[s] for s in exact}
-    deficit = n - sum(floor.values())
+    if strata_map is None:
+        strata_map = precompute_strata(schools)
+
+    # Пропорциональное размещение (Hare largest-remainder)
+    exact = {s: n * len(idx) / N_total for s, idx in strata_map.items()}
+    alloc = {s: int(v) for s, v in exact.items()}
+    rems = {s: exact[s] - alloc[s] for s in exact}
+    deficit = n - sum(alloc.values())
     for s in sorted(rems, key=rems.get, reverse=True)[:deficit]:
-        floor[s] += 1
+        alloc[s] += 1
 
     selected = []
-    for stratum, n_s in floor.items():
+    for stratum, n_s in alloc.items():
         if n_s == 0:
             continue
-        idx = schools.index[schools['stratum'] == stratum].values
+        idx = strata_map[stratum]
         if len(idx) <= n_s:
             selected.extend(idx)
         else:
             selected.extend(rng.choice(idx, size=n_s, replace=False))
 
-    selected = list(set(selected))
-    if len(selected) > n:
-        selected = list(rng.choice(selected, size=n, replace=False))
-    elif len(selected) < n:
-        remaining = list(set(range(len(schools))) - set(selected))
-        selected.extend(rng.choice(remaining, size=n - len(selected), replace=False))
-    return np.array(selected[:n])
+    return np.array(selected)
 
 
-def sample_kmedoids(X, n, seed=42):
+def sample_kcenter(X, n, seed=42):
+    """
+    Жадный k-center: последовательно добавляет наиболее удалённую
+    от уже выбранных точку. 2-аппроксимация задачи k-center.
+    """
     rng = np.random.RandomState(seed)
     N = X.shape[0]
     first = rng.randint(N)
     selected = [first]
     min_dist = np.sum((X - X[first]) ** 2, axis=1)
     for step in range(1, n):
-        farthest = np.argmax(min_dist)
+        farthest = int(np.argmax(min_dist))
         selected.append(farthest)
-        min_dist = np.minimum(min_dist, np.sum((X - X[farthest]) ** 2, axis=1))
+        dist_new = np.sum((X - X[farthest]) ** 2, axis=1)
+        np.minimum(min_dist, dist_new, out=min_dist)
         if (step + 1) % 500 == 0:
             print(f"    k-center: {step + 1}/{n}")
     return np.array(selected)
@@ -228,7 +238,7 @@ def _fl_exact(X, n):
     for _ in range(n):
         gains = np.maximum(0, sim - cov[:, None]).sum(axis=0)
         gains[mask] = -1.0
-        best = gains.argmax()
+        best = int(gains.argmax())
         selected.append(best)
         mask[best] = True
         cov = np.maximum(cov, sim[:, best])
@@ -270,32 +280,40 @@ def _fl_on_candidates(X_all, cand_idx, n):
 
 
 def sample_kernel_herding(X, n):
+    """
+    Kernel herding (Chen, Welling, Smola 2010):
+    детерминистический выбор подмножества, минимизирующего MMD.
+    μ_P вычисляется точно по всей совокупности (блоками).
+    """
     N = X.shape[0]
     rng = np.random.RandomState(0)
+
+    # σ² по подвыборке
     sub_idx = rng.choice(N, size=min(2000, N), replace=False)
     sub_d = cdist(X[sub_idx], X[sub_idx], metric='sqeuclidean')
     sigma2 = float(np.median(sub_d[sub_d > 0]))
+    inv_2s = 1.0 / (2 * sigma2)
 
-    eval_size = min(5000, N)
-    X_eval = X[rng.choice(N, size=eval_size, replace=False)]
+    # μ_P — точное среднее ядра по ВСЕЙ совокупности (блоками)
     mu = np.zeros(N, dtype=np.float64)
-    for s in range(0, eval_size, 2000):
-        e = min(s + 2000, eval_size)
-        mu += np.exp(-cdist(X_eval[s:e], X, metric='sqeuclidean')
-                     / (2 * sigma2)).sum(axis=0)
-    mu /= eval_size
+    block = 2000
+    for s in range(0, N, block):
+        e = min(s + block, N)
+        mu += np.exp(-cdist(X[s:e], X, metric='sqeuclidean') * inv_2s).sum(axis=0)
+    mu /= N
+    print(f"    KH: μ_P вычислено точно (N={N})")
 
+    # Жадный отбор
     selected, mask = [], np.zeros(N, dtype=bool)
     w = mu.copy()
-    inv_2s = 1.0 / (2 * sigma2)
     for step in range(n):
         wm = w.copy()
         wm[mask] = -np.inf
         best = int(np.argmax(wm))
         selected.append(best)
         mask[best] = True
-        d_best = cdist(X, X[best:best+1], metric='sqeuclidean').ravel()
-        w = w + mu - np.exp(-d_best * inv_2s)
+        k_best = np.exp(-np.sum((X - X[best]) ** 2, axis=1).astype(np.float64) * inv_2s)
+        w = w + mu - k_best
         if (step + 1) % 100 == 0:
             print(f"    KH: {step + 1}/{n}")
     return np.array(selected)
@@ -306,7 +324,6 @@ def sample_kernel_herding(X, n):
 # ============================================================
 
 def _compute_chi2_from_counts(sample_marks_series, marks, pop_probs):
-    """Chi2 / Cramér V по предвычисленным долям популяции."""
     sc = sample_marks_series.value_counts().sort_index()
     obs = np.array([sc.get(m, 0) for m in marks])
     exp_arr = pop_probs * obs.sum()
@@ -320,7 +337,6 @@ def _compute_chi2_from_counts(sample_marks_series, marks, pop_probs):
 
 
 def compute_chi2_marks(sample_marks, pop_marks):
-    """Обратная совместимость: считает pop_probs на лету."""
     pc = pop_marks.value_counts().sort_index()
     marks = sorted(pc.index)
     ep = np.array([pc.get(m, 0) for m in marks], dtype=np.float64)
@@ -329,7 +345,6 @@ def compute_chi2_marks(sample_marks, pop_marks):
 
 
 def compute_mmd(X_sample, X_pop, sigma=None):
-    """Полный MMD (для детерминированных методов)."""
     rng = np.random.RandomState(0)
     Xp = X_pop[rng.choice(len(X_pop), min(3000, len(X_pop)), replace=False)]
     Xs = X_sample[rng.choice(len(X_sample), min(3000, len(X_sample)), replace=False)]
@@ -346,7 +361,6 @@ def compute_mmd(X_sample, X_pop, sigma=None):
 
 
 def _compute_mmd_fast(X_sample, pop_stats):
-    """MMD с предвычисленными Kpp и σ² — один cdist вместо трёх."""
     rng = np.random.RandomState(0)
     Xs = X_sample
     if len(Xs) > 3000:
@@ -396,10 +410,6 @@ def validate_slice(samp_sl, pop_sl, grade, subj):
 
 def validate_sample_fast(sample_indices, schools, vpr, X_all,
                          vpr_index, pop_stats, compute_slices=False):
-    """
-    Быстрая валидация: VPR-индекс, предвычисленные pop-статистики,
-    кэшированные Kpp/σ². Опционально пропускает per-slice.
-    """
     logins = schools.iloc[sample_indices]['login'].values
     idx_arrays = [vpr_index[l] for l in logins if l in vpr_index]
     if not idx_arrays:
@@ -414,16 +424,12 @@ def validate_sample_fast(sample_indices, schools, vpr, X_all,
     r = {'n_schools_selected': len(logins),
          'n_students_sample': len(sample_vpr),
          'n_students_pop': pop_stats['n_pop']}
-
-    # Chi2 / Cramér V
     r.update(_compute_chi2_from_counts(sample_vpr['mark'], marks, pop_probs))
 
-    # KS
     ks_s, ks_p = ks_2samp(sample_vpr['score'].values, vpr['score'].values)
     r['ks_stat'] = ks_s
     r['ks_pvalue'] = ks_p
 
-    # Средние
     sm = float(sample_vpr['score'].mean())
     smk = float(sample_vpr['mark'].mean())
     r['mean_score_pop'] = pm
@@ -432,11 +438,8 @@ def validate_sample_fast(sample_indices, schools, vpr, X_all,
     r['mean_mark_pop'] = pmk
     r['mean_mark_sample'] = smk
     r['rel_error_mean_mark'] = abs(smk - pmk) / pmk
-
-    # MMD — быстрая версия
     r['mmd'] = _compute_mmd_fast(X_all[sample_indices], pop_stats)
 
-    # Слайсы
     if compute_slices:
         slices = []
         for (g, s), pop_sl in pop_stats['slice_groups'].items():
@@ -449,8 +452,10 @@ def validate_sample_fast(sample_indices, schools, vpr, X_all,
     return r
 
 
-def validate_sample(sample_logins, schools, vpr, X_all, sample_indices):
-    """Полная валидация (обратная совместимость, для детерм. методов)."""
+def validate_sample(sample_logins, schools, vpr, X_all, sample_indices,
+                    pop_stats=None):
+    """Полная валидация (для детерминированных методов).
+    Если передан pop_stats — MMD считается с той же σ², что и для стохастических."""
     logins = set(schools.iloc[sample_indices]['login'].values)
     sample_vpr = vpr[vpr['login'].isin(logins)]
     if len(sample_vpr) == 0:
@@ -472,33 +477,37 @@ def validate_sample(sample_logins, schools, vpr, X_all, sample_indices):
     r['mean_mark_pop'] = pmk
     r['mean_mark_sample'] = smk
     r['rel_error_mean_mark'] = abs(smk - pmk) / pmk
-    r['mmd'] = compute_mmd(X_all[sample_indices], X_all)
+
+    if pop_stats is not None:
+        r['mmd'] = _compute_mmd_fast(X_all[sample_indices], pop_stats)
+    else:
+        r['mmd'] = compute_mmd(X_all[sample_indices], X_all)
 
     slices = []
-    for (g, s), pop_sl in vpr.groupby(['grade', 'subject_code']):
-        samp_sl = sample_vpr[
-            (sample_vpr['grade'] == g) & (sample_vpr['subject_code'] == s)]
-        slices.append(validate_slice(samp_sl, pop_sl, g, s))
+    if pop_stats is not None:
+        for (g, s), pop_sl in pop_stats['slice_groups'].items():
+            samp_sl = sample_vpr[
+                (sample_vpr['grade'] == g) & (sample_vpr['subject_code'] == s)]
+            slices.append(validate_slice(samp_sl, pop_sl, g, s))
+    else:
+        for (g, s), pop_sl in vpr.groupby(['grade', 'subject_code']):
+            samp_sl = sample_vpr[
+                (sample_vpr['grade'] == g) & (sample_vpr['subject_code'] == s)]
+            slices.append(validate_slice(samp_sl, pop_sl, g, s))
     r['slices'] = slices
     return r
 
 
-def compute_composite_score(results):
-    if 'error' in results:
-        return float('inf')
-    s = 0.0
-    s += 0.25 * results.get('rel_error_mean_score', 1.0)
-    s += 0.20 * results.get('rel_error_mean_mark', 1.0)
-    s += 0.20 * results.get('ks_stat', 1.0)
-    s += 0.15 * min(results.get('mmd', 1.0), 1.0)
-    s += 0.10 * min(results.get('cramers_v', 1.0), 1.0)
-    s += 0.10 * min(results.get('max_mark_dev', 1.0), 1.0)
-    return s
-
-
-# ============================================================
-# 4. БЫСТРОЕ УСРЕДНЕНИЕ СТОХАСТИЧЕСКИХ ПРОГОНОВ
-# ============================================================
+# Метрики, входящие в composite score (и используемые для нормализации)
+COMPOSITE_WEIGHTS = [
+    ('rel_error_mean_score', 0.25),
+    ('rel_error_mean_mark', 0.20),
+    ('ks_stat', 0.20),
+    ('mmd', 0.15),
+    ('cramers_v', 0.10),
+    ('max_mark_dev', 0.10),
+]
+COMPOSITE_METRICS = [k for k, _ in COMPOSITE_WEIGHTS]
 
 ALL_METRIC_KEYS = [
     'rel_error_mean_score', 'rel_error_mean_mark', 'ks_stat',
@@ -508,18 +517,56 @@ ALL_METRIC_KEYS = [
 ]
 
 
-def _average_stochastic_runs(schools, vpr, X, n, n_runs, seed,
+def compute_composite_score(results, srs_norm=None):
+    """
+    Составной балл качества выборки.
+    Если передан srs_norm — каждая метрика нормализуется по среднему SRS:
+      1.0 = уровень SRS, <1.0 = лучше SRS, >1.0 = хуже SRS.
+    """
+    if 'error' in results:
+        return float('inf')
+    s = 0.0
+    for key, weight in COMPOSITE_WEIGHTS:
+        val = results.get(key, 1.0)
+        if srs_norm is not None and srs_norm.get(key, 0) > 0:
+            val = val / srs_norm[key]
+        s += weight * val
+    return s
+
+
+# ============================================================
+# 4. УСРЕДНЕНИЕ СТОХАСТИЧЕСКИХ ПРОГОНОВ
+# ============================================================
+
+
+def _collect_stochastic_runs(schools, vpr, X, n, n_runs, seed,
                              sampler_fn, vpr_index, pop_stats):
-    """N прогонов стохастического метода с быстрой валидацией."""
-    scores, all_runs = [], []
+    """Прогон стохастического метода N раз, сбор сырых метрик."""
+    all_runs = []
     for run in range(n_runs):
         idx = sampler_fn(seed + run)
         res = validate_sample_fast(
             idx, schools, vpr, X, vpr_index, pop_stats,
             compute_slices=False)
-        res['composite_score'] = compute_composite_score(res)
         all_runs.append(res)
-        scores.append(res['composite_score'])
+    return all_runs
+
+
+def _compute_srs_norm(srs_runs):
+    """Среднее каждой метрики по SRS-прогонам (базис нормализации)."""
+    norm = {}
+    valid = [r for r in srs_runs if 'error' not in r]
+    for key in COMPOSITE_METRICS:
+        vals = [r.get(key, 0) for r in valid]
+        norm[key] = float(np.mean(vals)) if vals else 1.0
+    return norm
+
+
+def _summarize_runs(all_runs, srs_norm=None):
+    """Вычисление нормализованных composite scores и средних."""
+    for res in all_runs:
+        res['composite_score'] = compute_composite_score(res, srs_norm=srs_norm)
+    scores = [r['composite_score'] for r in all_runs]
 
     avg = {}
     for key in ALL_METRIC_KEYS:
@@ -551,29 +598,35 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
     n = min(sample_size, len(schools) // 5)
     print(f"  Выборка: {n} из {len(schools)}")
 
-    # Предвычисления
     t0 = time.time()
     vpr_index = build_vpr_index(vpr)
     pop_stats = precompute_pop_stats(vpr, X)
+    strata_map = precompute_strata(schools)
     print(f"  Предвычисления: {time.time() - t0:.1f}с")
 
-    # --- SRS ---
-    srs_entry, srs_scores, srs_all, srs_avg = _average_stochastic_runs(
+    # ── Фаза 1: SRS прогоны → базис нормализации ──
+    srs_runs = _collect_stochastic_runs(
         schools, vpr, X, n, n_srs_runs, seed,
         sampler_fn=lambda s: sample_srs(schools, n, seed=s),
         vpr_index=vpr_index, pop_stats=pop_stats,
     )
+    srs_norm = _compute_srs_norm(srs_runs)
+    print(f"  SRS-нормализация: { {k: f'{v:.4f}' for k, v in srs_norm.items()} }")
 
-    # --- Стратифицированная ---
-    strat_entry, strat_scores, strat_all, strat_avg = _average_stochastic_runs(
+    # ── Фаза 2: все composite scores нормализуются по SRS ──
+    srs_entry, srs_scores, _, srs_avg = _summarize_runs(srs_runs, srs_norm=srs_norm)
+
+    strat_runs = _collect_stochastic_runs(
         schools, vpr, X, n, n_srs_runs, seed,
-        sampler_fn=lambda s: sample_stratified(schools, n, seed=s),
+        sampler_fn=lambda s: sample_stratified(schools, n, seed=s,
+                                               strata_map=strata_map),
         vpr_index=vpr_index, pop_stats=pop_stats,
     )
+    strat_entry, strat_scores, _, strat_avg = _summarize_runs(
+        strat_runs, srs_norm=srs_norm)
 
-    # --- Детерминированные ---
     det_methods = {
-        '3. k-center greedy':    lambda: sample_kmedoids(X, n, seed=seed),
+        '3. k-center greedy':    lambda: sample_kcenter(X, n, seed=seed),
         '4. Facility location':  lambda: sample_facility_location(X, n),
         '5. Kernel herding':     lambda: sample_kernel_herding(X, n),
     }
@@ -584,9 +637,9 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
         indices = fn()
         elapsed = time.time() - t0
         res = validate_sample(set(schools.iloc[indices]['login'].values),
-                              schools, vpr, X, indices)
+                              schools, vpr, X, indices, pop_stats=pop_stats)
         res['time_sec'] = elapsed
-        res['composite_score'] = compute_composite_score(res)
+        res['composite_score'] = compute_composite_score(res, srs_norm=srs_norm)
         all_results[name] = res
 
     return all_results, srs_avg, srs_scores, schools, vpr, X, n

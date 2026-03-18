@@ -154,9 +154,10 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
     from sampling_system import (
         load_context_data, load_vpr_data, build_school_features,
         prepare_feature_matrix, sample_srs, sample_stratified,
-        sample_kmedoids, sample_facility_location, sample_kernel_herding,
+        sample_kcenter, sample_facility_location, sample_kernel_herding,
         validate_sample, validate_sample_fast, compute_composite_score,
-        build_vpr_index, precompute_pop_stats,
+        build_vpr_index, precompute_pop_stats, precompute_strata,
+        _collect_stochastic_runs, _compute_srs_norm, _summarize_runs,
         VALID_MARKS, KIM_MAX_SCORES, SUBJECT_NAMES, ALL_METRIC_KEYS,
     )
 
@@ -175,50 +176,36 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
         # ─── Предвычисления (один раз) ──────────────────────────────────
         vpr_index = build_vpr_index(vpr)
         pop_stats = precompute_pop_stats(vpr, X)
+        strata_map = precompute_strata(schools)
 
-        # ─── Вспомогательная: прогон стохастического метода N раз ────────
-        def _run_stochastic(sampler_fn, n_runs):
-            scores_list, all_runs = [], []
-            for run in range(n_runs):
-                idx = sampler_fn(seed + run)
-                res = validate_sample_fast(
-                    idx, schools, vpr, X, vpr_index, pop_stats,
-                    compute_slices=False)
-                res['composite_score'] = compute_composite_score(res)
-                all_runs.append(res)
-                scores_list.append(res['composite_score'])
-
-            avg_raw = {}
-            for key in ALL_METRIC_KEYS:
-                vals = [r.get(key, 0) for r in all_runs]
-                avg_raw[key] = float(np.mean(vals))
-                avg_raw[f'{key}_std'] = float(np.std(vals))
-
-            avg_entry = {k: avg_raw[k] for k in ALL_METRIC_KEYS}
-            avg_entry['time_sec'] = 0.0
-            avg_entry['composite_score'] = avg_raw['composite_score']
-            avg_entry['slices'] = []
-            return avg_entry, scores_list, all_runs, avg_raw
-
-        # ─── SRS: N прогонов ────────────────────────────────────────────
-        srs_avg_entry, srs_scores, srs_all, srs_avg = _run_stochastic(
+        # ─── Фаза 1: SRS → базис нормализации ───────────────────────────
+        srs_runs = _collect_stochastic_runs(
+            schools, vpr, X, n, n_srs_runs, seed,
             sampler_fn=lambda s: sample_srs(schools, n, seed=s),
-            n_runs=n_srs_runs,
+            vpr_index=vpr_index, pop_stats=pop_stats,
         )
+        srs_norm = _compute_srs_norm(srs_runs)
+
+        # ─── Фаза 2: нормализованные composite scores ───────────────────
+        srs_avg_entry, srs_scores, _, srs_avg = _summarize_runs(
+            srs_runs, srs_norm=srs_norm)
         srs_mean = float(np.mean(srs_scores))
         srs_std = float(np.std(srs_scores))
 
-        # ─── Стратифицированная: N прогонов ─────────────────────────────
-        strat_avg_entry, strat_scores, strat_all, strat_avg = _run_stochastic(
-            sampler_fn=lambda s: sample_stratified(schools, n, seed=s),
-            n_runs=n_srs_runs,
+        strat_runs = _collect_stochastic_runs(
+            schools, vpr, X, n, n_srs_runs, seed,
+            sampler_fn=lambda s: sample_stratified(schools, n, seed=s,
+                                                   strata_map=strata_map),
+            vpr_index=vpr_index, pop_stats=pop_stats,
         )
+        strat_avg_entry, strat_scores, _, strat_avg = _summarize_runs(
+            strat_runs, srs_norm=srs_norm)
         strat_mean = float(np.mean(strat_scores))
         strat_std = float(np.std(strat_scores))
 
         # ─── Детерминированные ML-методы ────────────────────────────────
         det_methods = {
-            '3. k-center greedy':    lambda: sample_kmedoids(X, n, seed=seed),
+            '3. k-center greedy':    lambda: sample_kcenter(X, n, seed=seed),
             '4. Facility location':  lambda: sample_facility_location(X, n),
             '5. Kernel herding':     lambda: sample_kernel_herding(X, n),
         }
@@ -235,9 +222,10 @@ def run_cached(ctx_bytes, vpr_bytes, sample_size, seed, n_srs_runs):
             elapsed = time.time() - t0
             res = validate_sample(
                 set(schools.iloc[indices]['login'].values),
-                schools, vpr, X, indices)
+                schools, vpr, X, indices, pop_stats=pop_stats)
             res['time_sec'] = elapsed
-            res['composite_score'] = compute_composite_score(res)
+            res['composite_score'] = compute_composite_score(res,
+                                                             srs_norm=srs_norm)
             all_results[name] = res
             all_indices[name] = indices
 
@@ -299,7 +287,7 @@ if not run_btn:
 2. Настройте параметры: размер выборки, прогоны SRS/Стратиф., seed.<br>
 3. Нажмите <strong>▶ Запустить эксперимент</strong>.<br>
 4. Анализируйте результаты по вкладкам, включая валидацию по срезам (класс × предмет).<br>
-<em>SRS и Стратифицированная усредняются по N прогонов. Отметка 0 (непройденные темы) исключена из анализа.</em>
+<em>SRS и Стратифицированная усредняются по N прогонов. Составной балл нормализован по SRS (1.0 = уровень SRS). Отметка 0 исключена.</em>
 </div>""", unsafe_allow_html=True)
 
 elif not ctx_file or not vpr_file:
@@ -446,7 +434,7 @@ else:
             textposition='outside', textfont=dict(size=10, family='JetBrains Mono'),
         ))
         fig_bar.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(13,17,23,1)', height=280, yaxis_title='Балл (↓ лучше)',
+            plot_bgcolor='rgba(13,17,23,1)', height=280, yaxis_title='Балл (1.0 = SRS, ↓ лучше)',
             showlegend=False, margin=dict(l=40, r=10, t=30, b=40))
         st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -735,6 +723,7 @@ else:
             'strat_mean': round(strat_mean, 4), 'strat_std': round(strat_std, 4),
             'improvement_vs_srs': f'{improvement_srs:+.1f}%',
             'improvement_vs_strat': f'{improvement_strat:+.1f}%',
+            'composite_score_note': '1.0 = уровень SRS, <1.0 = лучше SRS',
             'mark_0_excluded': True,
             'kim_constraints': {
                 'РУ 4кл': '≤38', 'РУ 5кл': '≤45', 'РУ 6кл': '≤45',
