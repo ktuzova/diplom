@@ -20,63 +20,69 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Стили ────────────────────────────────────────────────────────────────────
+# ── Стили (светлая тема) ─────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geologica:wght@300;400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
 
 :root {
-    --bg: #0d1117; --surface: #161b22; --surface2: #21262d;
-    --border: #30363d; --accent: #2ea4ff; --accent2: #7ee787;
-    --accent3: #f78166; --accent4: #d2a8ff;
-    --text: #e6edf3; --muted: #8b949e;
+    --bg: #f8f9fb;
+    --surface: #ffffff;
+    --surface2: #f0f2f5;
+    --border: #e0e4ea;
+    --accent: #1a6dd4;
+    --accent2: #1a8c4e;
+    --accent3: #c73a2a;
+    --accent4: #7c4dba;
+    --text: #1a1e26;
+    --muted: #6b7280;
 }
 
 html, body, [class*="css"] {
     font-family: 'Geologica', sans-serif;
-    background-color: var(--bg); color: var(--text);
+    color: var(--text);
 }
 .main .block-container { padding: 1.5rem 2rem 3rem 2rem; max-width: 1400px; }
 
 .app-header {
     display: flex; align-items: center; gap: 1rem;
     padding: 1.5rem 2rem; margin: -1.5rem -2rem 2rem -2rem;
-    background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #0d1117 100%);
+    background: linear-gradient(135deg, #eef3fa 0%, #ffffff 50%, #eef3fa 100%);
     border-bottom: 1px solid var(--border); position: relative; overflow: hidden;
 }
 .app-header::before {
     content: ''; position: absolute; inset: 0;
-    background: radial-gradient(ellipse at 20% 50%, rgba(46,164,255,0.08) 0%, transparent 60%),
-                radial-gradient(ellipse at 80% 50%, rgba(126,231,135,0.05) 0%, transparent 60%);
+    background: radial-gradient(ellipse at 20% 50%, rgba(26,109,212,0.06) 0%, transparent 60%),
+                radial-gradient(ellipse at 80% 50%, rgba(26,140,78,0.04) 0%, transparent 60%);
 }
 .header-icon { font-size: 2.5rem; position: relative; z-index: 1; }
 .header-text { position: relative; z-index: 1; }
-.header-text h1 { margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; }
+.header-text h1 { margin: 0; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; color: var(--text); }
 .header-text p { margin: 0.2rem 0 0 0; font-size: 0.8rem; color: var(--muted); }
 
 .metric-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 1rem 1.2rem; text-align: center;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
-.metric-card:hover { border-color: var(--accent); }
+.metric-card:hover { border-color: var(--accent); box-shadow: 0 2px 8px rgba(26,109,212,0.1); }
 .metric-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.3rem; }
 .metric-value { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 600; }
 .metric-value.good { color: var(--accent2); }
-.metric-value.warn { color: #e3b341; }
+.metric-value.warn { color: #b8860b; }
 .metric-value.bad { color: var(--accent3); }
 .metric-sub { font-size: 0.68rem; color: var(--muted); margin-top: 0.2rem; }
 
 .method-badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 20px; font-size: 0.72rem; font-weight: 600; }
-.badge-srs { background: rgba(139,148,158,0.2); color: #8b949e; }
-.badge-strat { background: rgba(46,164,255,0.15); color: #2ea4ff; }
-.badge-kcenter { background: rgba(210,168,255,0.15); color: #d2a8ff; }
-.badge-facility { background: rgba(126,231,135,0.15); color: #7ee787; }
-.badge-herding { background: rgba(255,166,87,0.15); color: #ffa657; }
+.badge-srs { background: rgba(107,114,128,0.12); color: #6b7280; }
+.badge-strat { background: rgba(26,109,212,0.1); color: #1a6dd4; }
+.badge-kcenter { background: rgba(124,77,186,0.1); color: #7c4dba; }
+.badge-facility { background: rgba(26,140,78,0.1); color: #1a8c4e; }
+.badge-herding { background: rgba(207,120,30,0.12); color: #cf781e; }
 
 .winner-badge {
-    background: linear-gradient(135deg, rgba(126,231,135,0.2), rgba(46,164,255,0.15));
-    border: 1px solid rgba(126,231,135,0.4); border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0;
+    background: linear-gradient(135deg, rgba(26,140,78,0.08), rgba(26,109,212,0.06));
+    border: 1px solid rgba(26,140,78,0.3); border-radius: 8px; padding: 1rem 1.5rem; margin: 1rem 0;
 }
 .winner-badge h3 { margin: 0 0 0.3rem 0; color: var(--accent2); font-size: 1rem; }
 .winner-badge p { margin: 0; color: var(--muted); font-size: 0.85rem; }
@@ -87,25 +93,37 @@ html, body, [class*="css"] {
 }
 
 .info-box {
-    background: rgba(46,164,255,0.08); border: 1px solid rgba(46,164,255,0.25);
+    background: rgba(26,109,212,0.05); border: 1px solid rgba(26,109,212,0.2);
     border-radius: 8px; padding: 0.8rem 1rem; font-size: 0.82rem; color: var(--muted); line-height: 1.6;
 }
 .info-box strong { color: var(--accent); }
 
-[data-testid="stSidebar"] { background-color: var(--surface) !important; border-right: 1px solid var(--border); }
+[data-testid="stSidebar"] { border-right: 1px solid var(--border); }
 [data-testid="stSidebar"] .stMarkdown h3 { color: var(--accent); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
 
 .stButton > button {
-    background: linear-gradient(135deg, #2ea4ff, #1a7fd4) !important;
+    background: linear-gradient(135deg, #1a6dd4, #1558b0) !important;
     color: white !important; border: none !important; border-radius: 8px !important;
     font-family: 'Geologica', sans-serif !important; font-weight: 600 !important;
     font-size: 0.9rem !important; padding: 0.6rem 1.5rem !important; width: 100% !important;
 }
-.stButton > button:hover { transform: translateY(-1px) !important; box-shadow: 0 4px 20px rgba(46,164,255,0.3) !important; }
+.stButton > button:hover { transform: translateY(-1px) !important; box-shadow: 0 4px 20px rgba(26,109,212,0.25) !important; }
 
 div[data-testid="metric-container"] { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
+
+# ── Цвета для plotly (светлая тема) ──────────────────────────────────────────
+PLOT_BG = 'rgba(248,249,251,1)'
+PLOT_PAPER = 'rgba(255,255,255,0)'
+PLOT_TEMPLATE = 'plotly_white'
+CLR_POP = '#1a6dd4'       # синий — генеральная совокупность
+CLR_SAMPLE = '#1a8c4e'    # зелёный — выборка
+CLR_SRS = '#9ca3af'       # серый
+CLR_STRAT = '#1a6dd4'     # синий
+CLR_KCENTER = '#7c4dba'   # фиолетовый
+CLR_FACILITY = '#1a8c4e'  # зелёный
+CLR_HERDING = '#cf781e'   # оранжевый
 
 # ── Шапка ────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -131,7 +149,7 @@ with st.sidebar:
 
     st.markdown("### 🔬 Методы")
     st.markdown("""
-<div style="font-size:0.75rem; color:#8b949e; line-height:1.8">
+<div style="font-size:0.75rem; color:#6b7280; line-height:1.8">
 <span class="method-badge badge-srs">SRS</span> Простая случайная<br>
 <span class="method-badge badge-strat">STRAT</span> Стратифицированная<br>
 <span class="method-badge badge-kcenter">K-CTR</span> k-center greedy<br>
@@ -392,7 +410,7 @@ else:
 
         def hl(row):
             if row['Метод'] == best_ml:
-                return ['background-color: rgba(126,231,135,0.08); border-left: 3px solid #7ee787'] * len(row)
+                return ['background-color: rgba(26,140,78,0.08); border-left: 3px solid #1a8c4e'] * len(row)
             return [''] * len(row)
 
         st.dataframe(
@@ -424,17 +442,23 @@ else:
         # Bar chart
         st.markdown('<div class="section-title" style="margin-top:1.5rem">Составные баллы</div>', unsafe_allow_html=True)
         ns = sorted(R, key=lambda k: R[k].get('composite_score', 99))
+
+        def _bar_color(n):
+            if n == best_ml: return CLR_FACILITY
+            if 'SRS' in n: return CLR_SRS
+            if 'Страт' in n: return CLR_STRAT
+            if 'k-center' in n: return CLR_KCENTER
+            return CLR_HERDING
+
         fig_bar = go.Figure(go.Bar(
             x=[n.split('.')[-1].strip()[:30] for n in ns],
             y=[R[n]['composite_score'] for n in ns],
-            marker_color=['#7ee787' if n == best_ml else '#8b949e' if 'SRS' in n
-                          else '#2ea4ff' if 'Страт' in n else '#d2a8ff' if 'k-center' in n
-                          else '#ffa657' for n in ns],
+            marker_color=[_bar_color(n) for n in ns],
             text=[f"{R[n]['composite_score']:.4f}" for n in ns],
             textposition='outside', textfont=dict(size=10, family='JetBrains Mono'),
         ))
-        fig_bar.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(13,17,23,1)', height=280, yaxis_title='Балл (1.0 = SRS, ↓ лучше)',
+        fig_bar.update_layout(template=PLOT_TEMPLATE, paper_bgcolor=PLOT_PAPER,
+            plot_bgcolor=PLOT_BG, height=280, yaxis_title='Балл (1.0 = SRS, ↓ лучше)',
             showlegend=False, margin=dict(l=40, r=10, t=30, b=40))
         st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -450,12 +474,14 @@ else:
 
             fig_m = go.Figure()
             fig_m.add_trace(go.Bar(x=[f'Отметка {m}' for m in marks],
-                y=[pm.get(m, 0) for m in marks], name='Ген. совокупность', marker_color='#2ea4ff', opacity=0.8))
+                y=[pm.get(m, 0) for m in marks], name='Ген. совокупность',
+                marker_color=CLR_POP, opacity=0.85))
             fig_m.add_trace(go.Bar(x=[f'Отметка {m}' for m in marks],
                 y=[sm.get(m, 0) for m in marks],
-                name=f'Выборка ({best_ml.split(".")[-1].strip()})', marker_color='#7ee787', opacity=0.8))
-            fig_m.update_layout(barmode='group', template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,23,1)',
+                name=f'Выборка ({best_ml.split(".")[-1].strip()})',
+                marker_color=CLR_SAMPLE, opacity=0.85))
+            fig_m.update_layout(barmode='group', template=PLOT_TEMPLATE,
+                paper_bgcolor=PLOT_PAPER, plot_bgcolor=PLOT_BG,
                 height=320, yaxis_title='Доля',
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
                 margin=dict(l=40, r=10, t=30, b=40))
@@ -469,11 +495,13 @@ else:
             se = np.arange(1, len(ss)+1) / len(ss)
             sp, ssp = max(1, len(ps)//3000), max(1, len(ss)//3000)
             fig_e = go.Figure()
-            fig_e.add_trace(go.Scatter(x=ps[::sp], y=pe[::sp], name='Ген. совокупность', line=dict(color='#2ea4ff', width=2)))
+            fig_e.add_trace(go.Scatter(x=ps[::sp], y=pe[::sp], name='Ген. совокупность',
+                line=dict(color=CLR_POP, width=2)))
             fig_e.add_trace(go.Scatter(x=ss[::ssp], y=se[::ssp],
-                name=f'Выборка ({best_ml.split(".")[-1].strip()})', line=dict(color='#7ee787', width=2, dash='dash')))
-            fig_e.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(13,17,23,1)', height=320, xaxis_title='Балл', yaxis_title='ECDF',
+                name=f'Выборка ({best_ml.split(".")[-1].strip()})',
+                line=dict(color=CLR_SAMPLE, width=2, dash='dash')))
+            fig_e.update_layout(template=PLOT_TEMPLATE, paper_bgcolor=PLOT_PAPER,
+                plot_bgcolor=PLOT_BG, height=320, xaxis_title='Балл', yaxis_title='ECDF',
                 title=dict(text=f'KS = {ml_res["ks_stat"]:.4f}', font=dict(size=12)),
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
                 margin=dict(l=40, r=10, t=40, b=40))
@@ -483,13 +511,13 @@ else:
         st.markdown('<div class="section-title">Стабильность стохастических методов</div>', unsafe_allow_html=True)
         fig_v = go.Figure()
         fig_v.add_trace(go.Violin(y=srs_scores, box_visible=True, meanline_visible=True,
-            fillcolor='rgba(139,148,158,0.2)', line_color='#8b949e', name='SRS', x0='SRS'))
+            fillcolor='rgba(156,163,175,0.25)', line_color=CLR_SRS, name='SRS', x0='SRS'))
         fig_v.add_trace(go.Violin(y=strat_scores, box_visible=True, meanline_visible=True,
-            fillcolor='rgba(46,164,255,0.2)', line_color='#2ea4ff', name='Стратиф.', x0='Стратиф.'))
-        fig_v.add_hline(y=ml_score, line_dash='dash', line_color='#7ee787',
+            fillcolor='rgba(26,109,212,0.15)', line_color=CLR_STRAT, name='Стратиф.', x0='Стратиф.'))
+        fig_v.add_hline(y=ml_score, line_dash='dash', line_color=CLR_SAMPLE,
             annotation_text=f'{best_ml.split(".")[-1].strip()}', annotation_position='top right')
-        fig_v.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(13,17,23,1)', height=280, yaxis_title='Составной балл',
+        fig_v.update_layout(template=PLOT_TEMPLATE, paper_bgcolor=PLOT_PAPER,
+            plot_bgcolor=PLOT_BG, height=280, yaxis_title='Составной балл',
             showlegend=True, margin=dict(l=40, r=10, t=20, b=40))
         st.plotly_chart(fig_v, use_container_width=True)
 
@@ -550,12 +578,12 @@ else:
                             samp_pcts = [sl.get(f'sample_pct_{m}', 0) * 100 for m in [2, 3, 4, 5]]
 
                             fig_sl.add_trace(go.Bar(x=m_labels, y=pop_pcts,
-                                name='Поп.', marker_color='#2ea4ff', opacity=0.8))
+                                name='Поп.', marker_color=CLR_POP, opacity=0.85))
                             fig_sl.add_trace(go.Bar(x=m_labels, y=samp_pcts,
-                                name='Выб.', marker_color='#7ee787', opacity=0.8))
+                                name='Выб.', marker_color=CLR_SAMPLE, opacity=0.85))
                             fig_sl.update_layout(
-                                barmode='group', template='plotly_dark',
-                                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,23,1)',
+                                barmode='group', template=PLOT_TEMPLATE,
+                                paper_bgcolor=PLOT_PAPER, plot_bgcolor=PLOT_BG,
                                 height=220, title=dict(text=label, font=dict(size=11)),
                                 yaxis_title='%', showlegend=(idx == 0),
                                 legend=dict(orientation='h', yanchor='bottom', y=1.05, x=0),
@@ -595,12 +623,12 @@ else:
 
                                 fig_ec = go.Figure()
                                 fig_ec.add_trace(go.Scatter(x=ps2[::stp], y=pe2[::stp],
-                                    name='Поп.', line=dict(color='#2ea4ff', width=2)))
+                                    name='Поп.', line=dict(color=CLR_POP, width=2)))
                                 fig_ec.add_trace(go.Scatter(x=ss2[::sts], y=se2[::sts],
-                                    name='Выб.', line=dict(color='#7ee787', width=2, dash='dash')))
+                                    name='Выб.', line=dict(color=CLR_SAMPLE, width=2, dash='dash')))
                                 fig_ec.update_layout(
-                                    template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
-                                    plot_bgcolor='rgba(13,17,23,1)', height=220,
+                                    template=PLOT_TEMPLATE, paper_bgcolor=PLOT_PAPER,
+                                    plot_bgcolor=PLOT_BG, height=220,
                                     title=dict(text=f'{label} (KS={sl["ks_stat"]:.4f})', font=dict(size=11)),
                                     xaxis_title='Балл', yaxis_title='ECDF',
                                     showlegend=(idx == 0),
@@ -625,11 +653,11 @@ else:
         st.markdown('<div class="section-title">Средний балл ОО: выборка vs совокупность</div>', unsafe_allow_html=True)
         fig_h = go.Figure()
         fig_h.add_trace(go.Histogram(x=schools['mean_score'], nbinsx=50, name='Совокупность',
-            marker_color='rgba(46,164,255,0.4)', histnorm='probability density'))
+            marker_color='rgba(26,109,212,0.35)', histnorm='probability density'))
         fig_h.add_trace(go.Histogram(x=best_schools['mean_score'], nbinsx=30, name='Выборка',
-            marker_color='rgba(126,231,135,0.6)', histnorm='probability density'))
-        fig_h.update_layout(barmode='overlay', template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,23,1)', height=270,
+            marker_color='rgba(26,140,78,0.5)', histnorm='probability density'))
+        fig_h.update_layout(barmode='overlay', template=PLOT_TEMPLATE,
+            paper_bgcolor=PLOT_PAPER, plot_bgcolor=PLOT_BG, height=270,
             xaxis_title='Средний балл', yaxis_title='Плотность',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
             margin=dict(l=40, r=10, t=30, b=40))
@@ -644,11 +672,11 @@ else:
 
         fig_r = go.Figure()
         fig_r.add_trace(go.Bar(x=regs, y=[pr.get(r, 0)*100 for r in regs],
-            name='Совокупность', marker_color='rgba(46,164,255,0.6)'))
+            name='Совокупность', marker_color='rgba(26,109,212,0.55)'))
         fig_r.add_trace(go.Bar(x=regs, y=[sr.get(r, 0)*100 for r in regs],
-            name='Выборка', marker_color='rgba(126,231,135,0.7)'))
-        fig_r.update_layout(barmode='group', template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,23,1)',
+            name='Выборка', marker_color='rgba(26,140,78,0.6)'))
+        fig_r.update_layout(barmode='group', template=PLOT_TEMPLATE,
+            paper_bgcolor=PLOT_PAPER, plot_bgcolor=PLOT_BG,
             height=350, xaxis_title='Регион', yaxis_title='Доля, %',
             legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
             margin=dict(l=40, r=10, t=30, b=60), xaxis=dict(tickangle=-45))
@@ -665,11 +693,13 @@ else:
             cats = sorted(set(ploc.index) | set(sloc.index))
             fig_l = go.Figure()
             fig_l.add_trace(go.Bar(x=[loc_labels.get(c, str(c)) for c in cats],
-                y=[ploc.get(c, 0) for c in cats], name='Совокупность', marker_color='rgba(46,164,255,0.6)'))
+                y=[ploc.get(c, 0) for c in cats], name='Совокупность',
+                marker_color='rgba(26,109,212,0.55)'))
             fig_l.add_trace(go.Bar(x=[loc_labels.get(c, str(c)) for c in cats],
-                y=[sloc.get(c, 0) for c in cats], name='Выборка', marker_color='rgba(126,231,135,0.7)'))
-            fig_l.update_layout(barmode='group', template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,23,1)',
+                y=[sloc.get(c, 0) for c in cats], name='Выборка',
+                marker_color='rgba(26,140,78,0.6)'))
+            fig_l.update_layout(barmode='group', template=PLOT_TEMPLATE,
+                paper_bgcolor=PLOT_PAPER, plot_bgcolor=PLOT_BG,
                 height=270, showlegend=False, margin=dict(l=40, r=10, t=10, b=40))
             st.plotly_chart(fig_l, use_container_width=True)
 
@@ -682,11 +712,13 @@ else:
             cats_s = sorted(set(psz.index) | set(ssz.index))
             fig_s = go.Figure()
             fig_s.add_trace(go.Bar(x=[str(c) for c in cats_s],
-                y=[psz.get(c, 0) for c in cats_s], name='Совокупность', marker_color='rgba(46,164,255,0.6)'))
+                y=[psz.get(c, 0) for c in cats_s], name='Совокупность',
+                marker_color='rgba(26,109,212,0.55)'))
             fig_s.add_trace(go.Bar(x=[str(c) for c in cats_s],
-                y=[ssz.get(c, 0) for c in cats_s], name='Выборка', marker_color='rgba(126,231,135,0.7)'))
-            fig_s.update_layout(barmode='group', template='plotly_dark',
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(13,17,23,1)',
+                y=[ssz.get(c, 0) for c in cats_s], name='Выборка',
+                marker_color='rgba(26,140,78,0.6)'))
+            fig_s.update_layout(barmode='group', template=PLOT_TEMPLATE,
+                paper_bgcolor=PLOT_PAPER, plot_bgcolor=PLOT_BG,
                 height=270, showlegend=False, margin=dict(l=40, r=10, t=10, b=40),
                 xaxis=dict(title='Код размера НП'))
             st.plotly_chart(fig_s, use_container_width=True)

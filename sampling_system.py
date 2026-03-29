@@ -647,4 +647,4 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
 
 if __name__ == '__main__':
     results, srs_avg, srs_scores, _, _, _, _ = run_sampling_experiment(
-        'Конт_данныеОО.xlsx', 'pupils_ruma456_2019_2020.csv')
+        'конт_данныеоо.xlsx', 'pupils_ruma456_2019_2020.csv')
