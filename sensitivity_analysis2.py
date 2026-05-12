@@ -242,10 +242,10 @@ def plot_score_heatmap(scores_df: pd.DataFrame, ranks_df: pd.DataFrame,
 
     methods_display = [METHOD_SHORT[m] for m in METHOD_ORDER]
 
-    # ── Размеры фигуры ──
-    # 5 методов × ~2.0 дюйма по ширине + левый отступ под подписи весов
-    cell_w   = 2.0   # ширина ячейки в дюймах
-    cell_h   = 1.8   # высота ячейки в дюймах
+    #  Размеры фигуры
+
+    cell_w   = 2.0   # ширина
+    cell_h   = 1.8   # высота
     n_rows   = len(n_vals)      # 3
     n_cols   = len(METHOD_ORDER)  # 5
 
@@ -294,7 +294,7 @@ def plot_score_heatmap(scores_df: pd.DataFrame, ranks_df: pd.DataFrame,
                        aspect='auto')
         im_last = im
 
-        # ── Текст в ячейках ──
+        # Текст в ячейках
         for i in range(scores.shape[0]):
             for j in range(scores.shape[1]):
                 score_val = scores[i, j]
@@ -306,28 +306,28 @@ def plot_score_heatmap(scores_df: pd.DataFrame, ranks_df: pd.DataFrame,
                 # Крупный ранг
                 ax.text(j, i - 0.12, str(rank_val),
                         ha='center', va='center',
-                        fontsize=22, fontweight='bold', color=text_color)
+                        fontsize=27, fontweight='bold', color=text_color)
                 # Мелкое значение score
                 ax.text(j, i + 0.28, f'{score_val:.3f}',
                         ha='center', va='center',
-                        fontsize=16, color=text_color, alpha=0.82)
+                        fontsize=22, color=text_color, alpha=0.82)
 
         #  Подписи осей
         # X: названия методов — только на последнем подграфике
         if row_idx == n_rows - 1:
             ax.set_xticks(range(len(METHOD_ORDER)))
-            ax.set_xticklabels(methods_display, fontsize=17, linespacing=1.3)
+            ax.set_xticklabels(methods_display, fontsize=21, linespacing=1.3)
         else:
             ax.set_xticks(range(len(METHOD_ORDER)))
-            ax.set_xticklabels([], fontsize=17)
+            ax.set_xticklabels([], fontsize=21)
 
         # Y: подписи схем весов
         ax.set_yticks(range(len(ws_names)))
-        ax.set_yticklabels(ws_short, fontsize=16)
+        ax.set_yticklabels(ws_short, fontsize=21)
         ax.tick_params(axis='y', length=0, pad=10)
 
         # Заголовок подграфика (n = ...)
-        ax.set_title(f'n = {n_val}', fontsize=19, fontweight='bold', pad=10)
+        ax.set_title(f'n = {n_val}', fontsize=21, fontweight='bold', pad=10)
 
         # Сетка между ячейками
         ax.set_xticks(np.arange(-0.5, len(METHOD_ORDER), 1), minor=True)
@@ -341,7 +341,7 @@ def plot_score_heatmap(scores_df: pd.DataFrame, ranks_df: pd.DataFrame,
         left=left_margin / fig_w,
         right=1.0 - right_margin / fig_w,
         top=1.0 - title_frac,
-        hspace=0.18,                   # минимальный зазор между таблицами
+        hspace=0.15,                   # минимальный зазор между таблицами
     )
     cbar_ax = fig.add_axes([
         1.0 - (right_margin - 0.3) / fig_w,  # x
@@ -415,7 +415,7 @@ def print_summary(avg_ranks: pd.DataFrame, scores_df: pd.DataFrame):
         ranks = [avg_ranks.loc[ws, method] for ws in ws_names]
         r_min, r_max = min(ranks), max(ranks)
         spread = r_max - r_min
-        stable = '✓ стабильно' if spread <= 1.0 else '△ варьируется'
+        stable = 'стабильно' if spread <= 1.0 else '△ варьируется'
         name_short = METHOD_SHORT[method].replace('\n', ' ')
         print(f"  {name_short:<20}  ранги {r_min:.1f}–{r_max:.1f}  "
               f"(разброс {spread:.1f})  {stable}")
@@ -452,7 +452,7 @@ if __name__ == '__main__':
     for ws_name, weights in WEIGHT_SETS.items():
         total = sum(weights.values())
         assert abs(total - 1.0) < 1e-9, f'{ws_name}: сумма весов = {total}'
-    print('  Веса: суммы = 1.0 ✓')
+    print('  Веса: суммы = 1.0')
 
     df = load_data(csv_path)
     scores_df  = compute_scores(df)
