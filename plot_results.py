@@ -1,11 +1,8 @@
 """
-Построение графиков для Главы 3 ВКР.
-Данные из прогона statistical_analysis.py (K=20 размеров выборки).
+Построение графиков
+Данные из прогона statistical_analysis.py.
 
-Запуск:
-    python plot_results.py
-
-ВКР 2025 — Тузова К. К.
+ВКР — Тузова К. К.
 """
 
 import matplotlib.pyplot as plt
@@ -99,7 +96,7 @@ def plot_sensitivity():
 
 
 # ════════════════════════════════════════════════════════════════
-# 2. CD-диаграмма Немени (оригинальный дизайн, мелкий шрифт)
+# 2. CD-диаграмма Немени
 # ════════════════════════════════════════════════════════════════
 
 def plot_cd_diagram():
@@ -109,70 +106,73 @@ def plot_cd_diagram():
     colors =  ['#d4802a', '#2e8b57', '#3266ad', '#73726c', '#9370DB']
     cd = 1.364
 
-    fig, ax = plt.subplots(figsize=(11, 5.0))
+    fig, ax = plt.subplots(figsize=(11, 8.0))
     ax.set_xlim(0.5, 5.5)
-    ax.set_ylim(-1.8, 4.5)
+    ax.set_ylim(-3.2, 4.8)
 
     # Ось рангов
-    ax.plot([1, 5], [3, 3], '-', color='#444', linewidth=1)
+    ax.plot([1, 5], [3, 3], '-', color='#444', linewidth=1.5)
     for r in range(1, 6):
-        ax.plot([r, r], [2.85, 3.15], '-', color='#444', linewidth=1)
-        ax.text(r, 3.35, str(r), ha='center', va='bottom', fontsize=10)
+        ax.plot([r, r], [2.82, 3.18], '-', color='#444', linewidth=1.5)
+        ax.text(r, 3.30, str(r), ha='center', va='bottom', fontsize=11)
 
     # CD-отрезок сверху
     cd_start = 1.0
     cd_end = cd_start + cd
-    ax.annotate('', xy=(cd_end, 3.7), xytext=(cd_start, 3.7),
-                arrowprops=dict(arrowstyle='<->', color='#333', lw=1.5))
-    ax.text((cd_start + cd_end) / 2, 3.85, f'CD = {cd:.2f}',
-            ha='center', va='bottom', fontsize=9, color='#333')
+    ax.annotate('', xy=(cd_end, 3.85), xytext=(cd_start, 3.85),
+                arrowprops=dict(arrowstyle='<->', color='#333', lw=2.0))
+    ax.text((cd_start + cd_end) / 2, 4.02, f'CD = {cd:.2f}',
+            ha='center', va='bottom', fontsize=11, color='#333', fontweight='bold')
 
-    # Методы: точки + подписи (увеличенный шаг 0.80 вместо 0.65)
+    # Методы: точки + подписи
     for i, (name, rank, color) in enumerate(zip(methods, ranks, colors)):
         y_pos = 2.2 - i * 0.80
         ax.plot(rank, y_pos, 'o', color=color, markersize=9, zorder=5)
         ax.plot([rank, rank], [y_pos, 3], '--', color=color,
                 linewidth=1, alpha=0.5)
         if rank < 3:
-            ax.text(rank - 0.12, y_pos, name, ha='right', va='center',
-                    fontsize=8.5, color=color, fontweight='bold')
+            ax.text(rank - 0.12, y_pos + 0.10, name, ha='right', va='bottom',
+                    fontsize=12, color=color, fontweight='bold')
             ax.text(rank - 0.12, y_pos - 0.28, f'R = {rank:.2f}',
-                    ha='right', va='center', fontsize=8, color=color)
+                    ha='right', va='center', fontsize=11, color=color, fontweight='bold')
         else:
-            ax.text(rank + 0.12, y_pos, name, ha='left', va='center',
-                    fontsize=8.5, color=color, fontweight='bold')
+            ax.text(rank + 0.12, y_pos + 0.10, name, ha='left', va='bottom',
+                    fontsize=12, color=color, fontweight='bold')
             ax.text(rank + 0.12, y_pos - 0.28, f'R = {rank:.2f}',
-                    ha='left', va='center', fontsize=8, color=color)
-
-    # Скобки: незначимые группы
-    ax.plot([1.40, 2.55], [0.55, 0.55], '-', color='#888', linewidth=2.5,
-            solid_capstyle='round')
-    ax.text((1.40 + 2.55) / 2, 0.35, 'not significant', ha='center',
-            fontsize=8, color='#888')
-
-    ax.plot([2.55, 5.00], [-0.25, -0.25], '-', color='#888', linewidth=2.5,
-            solid_capstyle='round')
-    ax.text((2.55 + 5.00) / 2, -0.45, 'not significant', ha='center',
-            fontsize=8, color='#888')
+                    ha='left', va='center', fontsize=11, color=color, fontweight='bold')
 
     # Значимые пары
     sig_pairs = [
         (2.25, 3.80, 'SRS vs FL: 1.55'),
         (1.40, 3.80, 'SRS vs KH: 2.40'),
-        (2.55, 5.00, 'k-ctr vs Strat: 2.45'),
+        (2.55, 5.00, 'k-ctr vs Стр.: 2.45'),
         (2.25, 5.00, 'k-ctr vs FL: 2.75'),
         (1.40, 5.00, 'k-ctr vs KH: 3.60'),
     ]
-    y_sig = -0.9
-    for r1, r2, label in sig_pairs:
+    y_levels = [-0.45, -0.75, -1.05, -1.35, -1.65]
+    for (r1, r2, label), y_sig in zip(sig_pairs, y_levels):
         ax.annotate('', xy=(r1, y_sig), xytext=(r2, y_sig),
                     arrowprops=dict(arrowstyle='-', color='#cc3333',
-                                    lw=0.8, linestyle='--'))
-        ax.text((r1 + r2) / 2, y_sig - 0.15, label, ha='center',
-                fontsize=7, color='#cc3333')
-        y_sig -= 0.30
+                                    lw=1.5, linestyle='dashed'))
+        ax.text((r1 + r2) / 2, y_sig + 0.07, label,
+                ha='center', va='bottom', fontsize=9.5,
+                color='#cc3333', fontweight='bold',
+                bbox=dict(facecolor='white', edgecolor='none', pad=1.5))
 
-    ax.set_xlabel('Average rank (1 = best)', fontsize=11)
+    # Незначимые скобки
+    bk1_y = -2.10
+    ax.plot([1.40, 2.55], [bk1_y, bk1_y], '-', color='#888',
+            linewidth=2.5, solid_capstyle='round')
+    ax.text((1.40 + 2.55) / 2, bk1_y - 0.18,
+            'не значимо', ha='center', va='top', fontsize=10, color='#888')
+
+    bk2_y = -2.60
+    ax.plot([2.55, 5.00], [bk2_y, bk2_y], '-', color='#888',
+            linewidth=2.5, solid_capstyle='round')
+    ax.text((2.55 + 5.00) / 2, bk2_y - 0.18,
+            'не значимо', ha='center', va='top', fontsize=10, color='#888')
+
+    ax.set_xlabel('Средний ранг (1 = лучший)', fontsize=11)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_visible(False)

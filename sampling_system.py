@@ -1,11 +1,11 @@
 """
 Система сэмплинга данных для формирования репрезентативной выборки
-образовательных организаций (ОО) на основе данных ВПР.
+ОО на основе данных ВПР.
 
 Реализует 5 методов отбора и валидирует выборки по совпадению
 распределений результатов ВПР с генеральной совокупностью.
 
-ВКР, 2025 — Тузова Ксения Кирилловна
+ВКР — Тузова Ксения Кирилловна
 """
 
 import numpy as np
@@ -28,9 +28,9 @@ KIM_MAX_SCORES = {
 SUBJECT_NAMES = {1: 'РУ', 2: 'МА'}
 VALID_MARKS = [2, 3, 4, 5]
 
-# ============================================================
+
 # 1. ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ
-# ============================================================
+
 
 def load_context_data(path: str) -> pd.DataFrame:
     df = pd.read_excel(path)
@@ -102,9 +102,9 @@ def prepare_feature_matrix(schools):
     return X
 
 
-# ============================================================
+
 # 1b. ПРЕДВЫЧИСЛЕНИЯ ДЛЯ БЫСТРОЙ ВАЛИДАЦИИ
-# ============================================================
+
 
 def build_vpr_index(vpr):
     """login → массив индексов строк ВПР. O(1) вместо isin() на 11М строк."""
@@ -157,9 +157,9 @@ def precompute_strata(schools):
     return strata_map
 
 
-# ============================================================
+
 # 2. МЕТОДЫ СЭМПЛИНГА
-# ============================================================
+
 
 def sample_srs(schools, n, seed=42):
     return np.random.RandomState(seed).choice(len(schools), size=n, replace=False)
@@ -319,9 +319,9 @@ def sample_kernel_herding(X, n):
     return np.array(selected)
 
 
-# ============================================================
+
 # 3. МЕТРИКИ ВАЛИДАЦИИ
-# ============================================================
+
 
 def _compute_chi2_from_counts(sample_marks_series, marks, pop_probs):
     sc = sample_marks_series.value_counts().sort_index()
@@ -404,9 +404,9 @@ def validate_slice(samp_sl, pop_sl, grade, subj):
     return res
 
 
-# ============================================================
+
 # 3b. БЫСТРАЯ ВАЛИДАЦИЯ (для стохастических прогонов)
-# ============================================================
+
 
 def validate_sample_fast(sample_indices, schools, vpr, X_all,
                          vpr_index, pop_stats, compute_slices=False):
@@ -534,9 +534,9 @@ def compute_composite_score(results, srs_norm=None):
     return s
 
 
-# ============================================================
+
 # 4. УСРЕДНЕНИЕ СТОХАСТИЧЕСКИХ ПРОГОНОВ
-# ============================================================
+
 
 
 def _collect_stochastic_runs(schools, vpr, X, n, n_runs, seed,
@@ -581,9 +581,9 @@ def _summarize_runs(all_runs, srs_norm=None):
     return avg_entry, scores, all_runs, avg
 
 
-# ============================================================
+
 # 5. ГЛАВНАЯ ФУНКЦИЯ
-# ============================================================
+
 
 def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
                             seed=42, n_srs_runs=50):
@@ -604,7 +604,7 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
     strata_map = precompute_strata(schools)
     print(f"  Предвычисления: {time.time() - t0:.1f}с")
 
-    # ── Фаза 1: SRS прогоны → базис нормализации ──
+    #  Фаза 1: SRS прогоны → базис нормализации
     srs_runs = _collect_stochastic_runs(
         schools, vpr, X, n, n_srs_runs, seed,
         sampler_fn=lambda s: sample_srs(schools, n, seed=s),
@@ -613,7 +613,7 @@ def run_sampling_experiment(ctx_path, vpr_path, sample_size=300,
     srs_norm = _compute_srs_norm(srs_runs)
     print(f"  SRS-нормализация: { {k: f'{v:.4f}' for k, v in srs_norm.items()} }")
 
-    # ── Фаза 2: все composite scores нормализуются по SRS ──
+    #  Фаза 2: все composite scores нормализуются по SRS
     srs_entry, srs_scores, _, srs_avg = _summarize_runs(srs_runs, srs_norm=srs_norm)
 
     strat_runs = _collect_stochastic_runs(
